@@ -134,6 +134,13 @@ class VerifyRazorpayPaymentRequest(BaseModel):
     user_id: Optional[str] = None
 
 
+def case_insensitive_replace(source_text: str, find_pattern: str, replacement_text: str) -> str:
+    if not find_pattern:
+        return source_text
+    escaped_find = re.escape(find_pattern)
+    return re.sub(escaped_find, lambda m: replacement_text, source_text, flags=re.IGNORECASE)
+
+
 # --- Text Transformation & Filtering Engine ---
 def apply_text_transformation(text: str, settings: dict) -> tuple[str, bool, str]:
     if not text:
@@ -155,7 +162,7 @@ def apply_text_transformation(text: str, settings: dict) -> tuple[str, bool, str
 
     transformed = text
 
-    # Multi-rule replacement
+    # Multi-rule replacement (Case-Insensitive)
     replacement_rules = settings.get("replacement_rules")
     if replacement_rules and isinstance(replacement_rules, list):
         for rule in replacement_rules:
@@ -163,9 +170,9 @@ def apply_text_transformation(text: str, settings: dict) -> tuple[str, bool, str
                 f_str = rule.get("find", "")
                 r_str = rule.get("replace", "")
                 if f_str:
-                    transformed = transformed.replace(f_str, r_str)
+                    transformed = case_insensitive_replace(transformed, f_str, r_str)
 
-    # Legacy Find/Replace (comma-separated support)
+    # Legacy / Quick Mode Bulk Find/Replace (comma-separated support, Case-Insensitive)
     find_str = settings.get("find_text", "").strip()
     replace_str = settings.get("replace_text", "").strip()
 
@@ -174,7 +181,7 @@ def apply_text_transformation(text: str, settings: dict) -> tuple[str, bool, str
         replace_list = [r.strip() for r in replace_str.split(",")]
         for idx, target in enumerate(find_list):
             rep = replace_list[idx] if idx < len(replace_list) else (replace_list[-1] if replace_list else "")
-            transformed = transformed.replace(target, rep)
+            transformed = case_insensitive_replace(transformed, target, rep)
 
     # Link modification
     url_pattern = r'https?://[^\s]+'
@@ -307,21 +314,20 @@ async def get_user_me(current_user: dict = Depends(get_current_user)):
 async def get_status(current_user: dict = Depends(get_current_user)):
     """
     Returns application and Telegram connection status.
-    Does NOT initiate or create a new Telegram connection. Reuses existing client if present.
+    Uses non-destructive status inspection (CONNECTED | RECONNECTING | DISCONNECTED_TEMPORARILY | SESSION_REVOKED | NO_SESSION).
     """
     user_id = current_user["id"]
     profile = get_user_profile_from_db(user_id) if IS_SUPABASE_CONFIGURED else {}
 
-    # Inspect existing client only
-    client = telegram_manager.get_existing_client(user_id)
+    status_info = await telegram_manager.get_user_session_status(user_id)
+    is_authorized = status_info["authorized"]
+    is_connected = status_info["connected"]
 
-    is_authorized = False
     tg_user = None
-
-    if client and client.is_connected():
-        try:
-            if await client.is_user_authorized():
-                is_authorized = True
+    if is_connected:
+        client = telegram_manager.get_existing_client(user_id)
+        if client and client.is_connected():
+            try:
                 me = await client.get_me()
                 tg_user = {
                     "id": me.id,
@@ -329,15 +335,10 @@ async def get_status(current_user: dict = Depends(get_current_user)):
                     "username": me.username or profile.get("telegram_username") or "",
                     "phone": me.phone or profile.get("telegram_phone") or ""
                 }
-        except (AuthKeyDuplicatedError, AuthKeyUnregisteredError, UserDeactivatedError, UnauthorizedError) as auth_err:
-            print(f"🚨 Invalidating duplicate/expired session for user {user_id[:8]}: {auth_err}")
-            await telegram_manager.invalidate_session(user_id, reason=str(auth_err))
-            is_authorized = False
-            tg_user = None
-        except Exception as e:
-            print(f"Notice inspecting Telegram status for user {user_id[:8]}: {e}")
+            except Exception:
+                pass
 
-    if not tg_user and is_authorized and (profile.get("telegram_phone") or profile.get("telegram_first_name")):
+    if not tg_user and (profile.get("telegram_phone") or profile.get("telegram_first_name")):
         tg_user = {
             "id": profile.get("telegram_user_id") or profile.get("telegram_phone") or user_id[:8],
             "first_name": profile.get("telegram_first_name") or "Telegram User",
@@ -349,13 +350,13 @@ async def get_status(current_user: dict = Depends(get_current_user)):
     stats = get_user_stats(user_id)
     subscription = get_user_subscription_from_db(user_id)
 
-    session_expired = bool(profile.get("telegram_phone") and not is_authorized)
-
     return {
-        "connected": is_authorized,
+        "connected": is_connected,
         "authorized": is_authorized,
-        "requires_login": not is_authorized,
-        "session_expired": session_expired,
+        "requires_login": status_info["requires_login"],
+        "session_expired": status_info["session_expired"],
+        "status_code": status_info["status_code"],
+        "status_message": status_info["status_message"],
         "user": tg_user,
         "account": current_user,
         "stats": stats,
@@ -426,19 +427,29 @@ async def get_channels(
         return {"success": True, "channels": channels, "requires_login": False}
     except Exception as e:
         print(f"❌ Error fetching channels for user {user_id[:8]}: {e}")
-        if isinstance(e, (AuthKeyDuplicatedError, AuthKeyUnregisteredError, UserDeactivatedError, UnauthorizedError)):
+        if isinstance(e, (AuthKeyUnregisteredError, UserDeactivatedError, UnauthorizedError)):
             await telegram_manager.invalidate_session(user_id, reason=str(e))
             return {"success": False, "channels": [], "requires_login": True, "detail": str(e)}
+        elif isinstance(e, AuthKeyDuplicatedError):
+            print(f"🚨 [TELEGRAM_SESSION_CONFLICT] AuthKeyDuplicatedError in get_channels for user {user_id[:8]}. DB session preserved.")
+            return {"success": False, "channels": [], "requires_login": False, "detail": str(e)}
         return {"success": False, "channels": [], "detail": str(e)}
 
 
 from telethon.tl.types import PeerUser, PeerChat, PeerChannel
+
+RESOLVED_ENTITIES_CACHE: Dict[str, Any] = {}
+
 
 async def resolve_telegram_entity(client, channel_id: str):
     if not client or not channel_id:
         return None
 
     ch_str = str(channel_id).strip()
+    cache_key = f"{id(client)}_{ch_str}"
+    if cache_key in RESOLVED_ENTITIES_CACHE:
+        return RESOLVED_ENTITIES_CACHE[cache_key]
+
     clean_id = ch_str.replace("-100", "").replace("-", "").strip()
 
     # 1. Try direct get_entity with candidate ID, Peer objects, & username representations
@@ -470,6 +481,7 @@ async def resolve_telegram_entity(client, channel_id: str):
         try:
             entity = await client.get_entity(cand)
             if entity:
+                RESOLVED_ENTITIES_CACHE[cache_key] = entity
                 return entity
         except Exception:
             pass
@@ -481,6 +493,7 @@ async def resolve_telegram_entity(client, channel_id: str):
         for d in dialogs:
             d_clean = str(d.id).replace("-100", "").replace("-", "").strip()
             if d_clean and clean_id and d_clean == clean_id:
+                RESOLVED_ENTITIES_CACHE[cache_key] = d.entity
                 return d.entity
 
         # Search by chat title / display name (case insensitive)
@@ -488,17 +501,35 @@ async def resolve_telegram_entity(client, channel_id: str):
         for d in dialogs:
             d_name = (d.name or getattr(d.entity, "title", None) or getattr(d.entity, "first_name", None) or "").lower()
             if d_name and (d_name == ch_lower or ch_lower in d_name or d_name in ch_lower):
+                RESOLVED_ENTITIES_CACHE[cache_key] = d.entity
                 return d.entity
 
         # Search by username
         for d in dialogs:
             d_user = (getattr(d.entity, "username", None) or "").lower()
             if d_user and d_user == ch_lower.replace("@", ""):
+                RESOLVED_ENTITIES_CACHE[cache_key] = d.entity
                 return d.entity
     except Exception as dialog_err:
         print(f"⚠️ Dialogs search fallback error for {channel_id}: {dialog_err}")
 
     raise ValueError(f"Could not resolve Telegram entity for channel: {channel_id}")
+
+
+def is_same_channel(val1: Any, val2: Any) -> bool:
+    if not val1 or not val2:
+        return False
+    s1 = str(val1).strip().lower()
+    s2 = str(val2).strip().lower()
+    if s1 == s2:
+        return True
+    c1 = s1.replace("-100", "").replace("-", "").strip()
+    c2 = s2.replace("-100", "").replace("-", "").strip()
+    if c1 and c2 and c1 == c2:
+        return True
+    if s1.replace("@", "") == s2.replace("@", ""):
+        return True
+    return False
 
 
 @app.get("/api/messages")
@@ -531,11 +562,24 @@ async def get_messages(
             history = await client.get_messages(entity, limit=30)
             batch_map = {m.id: m for m in history}
             fetched_msgs = []
+
+            source_setting = settings.get("source_channel_id", "all")
+            dest_setting = settings.get("destination_channel_id", "")
+
+            is_source = (str(target_channel).strip() == "all") or is_same_channel(target_channel, source_setting) or is_same_channel(getattr(entity, "id", None), source_setting)
+            is_dest = is_same_channel(target_channel, dest_setting) or is_same_channel(getattr(entity, "id", None), dest_setting)
+
             for msg in history:
                 if not msg.text and not msg.message and not msg.media:
                     continue
                 raw_text = msg.text or msg.message or ""
-                transformed_text, should_forward, reason = apply_text_transformation(raw_text, settings)
+
+                if is_dest or not is_source:
+                    transformed_text = raw_text
+                    should_forward = True
+                    reason = "Destination message"
+                else:
+                    transformed_text, should_forward, reason = apply_text_transformation(raw_text, settings)
 
                 has_media = bool(msg.media)
                 media_type = "photo" if getattr(msg, "photo", None) else ("video" if getattr(msg, "video", None) else ("document" if getattr(msg, "document", None) else ("media" if msg.media else None)))
@@ -549,6 +593,9 @@ async def get_messages(
                     parent = batch_map.get(reply_to_msg_id)
                     if parent:
                         reply_text = parent.raw_text or parent.message or ""
+                        if not reply_text and parent.media:
+                            p_media = "VIDEO" if getattr(parent, "video", None) else ("PHOTO" if getattr(parent, "photo", None) else ("DOCUMENT" if getattr(parent, "document", None) else "MEDIA"))
+                            reply_text = f"[{p_media} Attachment]"
                         if parent.sender:
                             reply_sender = getattr(parent.sender, "first_name", "") or getattr(parent.sender, "title", "") or getattr(parent.sender, "username", "") or ""
                     else:
@@ -556,6 +603,9 @@ async def get_messages(
                             parent_msg = await msg.get_reply_message()
                             if parent_msg:
                                 reply_text = parent_msg.raw_text or parent_msg.message or ""
+                                if not reply_text and parent_msg.media:
+                                    p_media = "VIDEO" if getattr(parent_msg, "video", None) else ("PHOTO" if getattr(parent_msg, "photo", None) else ("DOCUMENT" if getattr(parent_msg, "document", None) else "MEDIA"))
+                                    reply_text = f"[{p_media} Attachment]"
                                 if parent_msg.sender:
                                     reply_sender = getattr(parent_msg.sender, "first_name", "") or getattr(parent_msg.sender, "title", "") or getattr(parent_msg.sender, "username", "") or ""
                         except Exception:

@@ -1,5 +1,39 @@
 import React, { useState, useEffect, useRef } from "react";
 
+const formatLocalDate = (dateStr) => {
+  if (!dateStr) return "";
+  try {
+    let raw = String(dateStr).trim();
+    if (!raw.endsWith("Z") && !raw.includes("+") && !raw.includes("T")) {
+      raw = raw.replace(" ", "T") + "Z";
+    }
+    const dateObj = new Date(raw);
+    if (isNaN(dateObj.getTime())) return dateStr;
+
+    const year = dateObj.getFullYear();
+    const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const day = String(dateObj.getDate()).padStart(2, '0');
+    const hours = String(dateObj.getHours()).padStart(2, '0');
+    const minutes = String(dateObj.getMinutes()).padStart(2, '0');
+    const seconds = String(dateObj.getSeconds()).padStart(2, '0');
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+  } catch (e) {
+    return dateStr;
+  }
+};
+
+const cleanDisplayMessage = (msgText) => {
+  if (!msgText) return "";
+  if (String(msgText).startsWith("↪ Replying to")) {
+    const parts = String(msgText).split("\n\n");
+    if (parts.length > 1) {
+      return parts.slice(1).join("\n\n").trim();
+    }
+    return "";
+  }
+  return msgText;
+};
+
 export default function StudioTab({
   status,
   channels,
@@ -341,25 +375,37 @@ export default function StudioTab({
         </div>
       </div>
 
-      {!isAuthorized && (
+      {/* Telegram Not Connected / Expired Warning Banner */}
+      {(!status?.authorized || status?.session_expired) && (
         <div
-          className="banner-notice warning"
+          className="card"
           style={{
-            background: "linear-gradient(135deg, rgba(245, 158, 11, 0.12) 0%, rgba(13, 18, 31, 0.95) 100%)",
-            border: "1px solid rgba(245, 158, 11, 0.35)",
-            borderRadius: "12px",
-            padding: "12px 18px",
+            marginBottom: "16px",
+            background: status?.status_code === "RECONNECTING" || status?.status_code === "DISCONNECTED_TEMPORARILY"
+              ? "rgba(245, 158, 11, 0.08)"
+              : "rgba(239, 68, 68, 0.08)",
+            border: status?.status_code === "RECONNECTING" || status?.status_code === "DISCONNECTED_TEMPORARILY"
+              ? "1px solid rgba(245, 158, 11, 0.3)"
+              : "1px solid rgba(239, 68, 68, 0.3)",
+            padding: "12px 16px",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            marginBottom: "16px",
             gap: "16px"
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: "12px", flex: 1, minWidth: 0 }}>
-            <i className="fa-solid fa-triangle-exclamation text-orange font-18" style={{ flexShrink: 0 }}></i>
+            <i className={`fa-solid ${status?.status_code === "RECONNECTING" || status?.status_code === "DISCONNECTED_TEMPORARILY" ? "fa-spinner fa-spin text-orange" : "fa-triangle-exclamation text-red"} font-18`} style={{ flexShrink: 0 }}></i>
             <span style={{ fontSize: "12px", lineHeight: "1.4" }}>
-              {status?.session_expired ? (
+              {status?.status_code === "RECONNECTING" ? (
+                <>
+                  <strong>Reconnecting Telegram Session:</strong> Re-establishing secure connection to Telegram servers in background...
+                </>
+              ) : status?.status_code === "DISCONNECTED_TEMPORARILY" ? (
+                <>
+                  <strong>Connection Temporarily Offline:</strong> Retrying background connection. Your saved session credentials remain completely intact.
+                </>
+              ) : status?.session_expired ? (
                 <>
                   <strong>
                     Session Key Revoked{status?.user?.first_name ? ` for ${status.user.first_name}` : ""}{status?.user?.phone ? ` (${status.user.phone})` : ""}:
@@ -373,13 +419,15 @@ export default function StudioTab({
               )}
             </span>
           </div>
-          <button
-            className="btn btn-primary btn-sm"
-            style={{ whiteSpace: "nowrap", flexShrink: 0, padding: "8px 14px", fontSize: "12px" }}
-            onClick={onOpenLogin}
-          >
-            <i className="fa-paper-plane fa-solid"></i> {status?.session_expired ? `Reconnect ${status?.user?.first_name || "Telegram"}` : "Connect Telegram Account"}
-          </button>
+          {!(status?.status_code === "RECONNECTING" || status?.status_code === "DISCONNECTED_TEMPORARILY") && (
+            <button
+              className="btn btn-primary btn-sm"
+              style={{ whiteSpace: "nowrap", flexShrink: 0, padding: "8px 14px", fontSize: "12px" }}
+              onClick={onOpenLogin}
+            >
+              <i className="fa-paper-plane fa-solid"></i> {status?.session_expired ? `Reconnect ${status?.user?.first_name || "Telegram"}` : "Connect Telegram Account"}
+            </button>
+          )}
         </div>
       )}
 
@@ -471,7 +519,7 @@ export default function StudioTab({
                       <span style={{ fontWeight: "700", color: "#ffffff", fontSize: "12px" }}>
                         <i className="fa-regular fa-square"></i> {m.chat_name}
                       </span>
-                      <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>{m.date}</span>
+                      <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>{formatLocalDate(m.date)}</span>
                     </div>
 
                     <div className="msg-body" style={{ fontSize: "13px", fontWeight: "600", color: "#ffffff", margin: "8px 0", lineHeight: "1.4" }}>
@@ -822,7 +870,7 @@ export default function StudioTab({
                       <strong style={{ color: "var(--accent-green)", fontSize: "12px" }}>
                         <i className="fa-solid fa-circle-check"></i> {selectedDest ? selectedDest.name : "Destination Feed"}
                       </strong>
-                      <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>{m.date}</span>
+                      <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>{formatLocalDate(m.date)}</span>
                     </div>
 
                     <div className="msg-body" style={{ fontSize: "13px", fontWeight: "600", color: "#ffffff", margin: "8px 0", lineHeight: "1.4" }}>
@@ -846,7 +894,7 @@ export default function StudioTab({
                           </span>
                         </div>
                       )}
-                      {m.transformed_message || m.raw_message || (
+                      {cleanDisplayMessage(m.transformed_message || m.raw_message) || (
                         <span style={{ fontStyle: "italic", color: "var(--text-muted)", fontSize: "12px" }}>
                           (Media Attachment Forwarded)
                         </span>
