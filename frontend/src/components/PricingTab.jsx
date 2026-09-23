@@ -2,8 +2,9 @@ import React, { useState } from "react";
 import { authFetch, getApiUrl } from "../api";
 
 export default function PricingTab({ status, onRefresh, showToast }) {
-  const currentPlan = status?.subscription?.plan_id || "free";
   const isSubActive = status?.subscription?.status === "active";
+  const isExpired = status?.subscription?.status === "expired" || status?.subscription?.is_expired;
+  const currentPlan = isSubActive ? (status?.subscription?.plan_id || "free") : "free";
   const [loadingPlan, setLoadingPlan] = useState(null);
 
   const notify = (msg, type = "info") => {
@@ -120,6 +121,27 @@ export default function PricingTab({ status, onRefresh, showToast }) {
           Unlock real-time Telegram message listener, multi-tenant channel sync & n8n webhook automation.
         </p>
       </div>
+
+      {isExpired && (
+        <div style={{
+          maxWidth: "800px",
+          margin: "0 auto 24px auto",
+          background: "rgba(239, 68, 68, 0.12)",
+          border: "1px solid rgba(239, 68, 68, 0.35)",
+          borderRadius: "10px",
+          padding: "14px 18px",
+          display: "flex",
+          alignItems: "center",
+          gap: "12px",
+          color: "#fca5a5",
+          fontSize: "13px"
+        }}>
+          <i className="fa-solid fa-clock-rotate-left" style={{ fontSize: "20px", color: "#ef4444", flexShrink: 0 }}></i>
+          <div>
+            <strong>Subscription Expired:</strong> Your previous 30-day monthly plan has completed its validity period. Choose a plan below to renew and reactivate automated channel syncing.
+          </div>
+        </div>
+      )}
 
       <div className="pricing-grid">
         {/* Basic Plan */}

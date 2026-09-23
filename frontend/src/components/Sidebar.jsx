@@ -70,7 +70,7 @@ export default function Sidebar({ activeTab, setActiveTab, status, onLogoutUser 
             style={{ fontSize: "10px", color: "#fcd535", background: "rgba(252, 213, 53, 0.15)", padding: "2px 6px", borderRadius: "4px", fontWeight: "600", cursor: "pointer" }}
             title="Current Plan"
           >
-            👑 {status?.subscription?.plan_name || "Free"}
+            {status?.subscription?.status === "active" ? `👑 ${status?.subscription?.plan_name || "Active"}` : "Free Tier"}
           </span>
         </div>
       </div>

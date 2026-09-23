@@ -5,7 +5,9 @@ export default function Header({ activeTab, setActiveTab, status, onOpenLogin, o
   const isSessionExpired = status?.session_expired;
   const tgUser = status?.user;
   const userEmail = status?.account?.email || "";
-  const planName = status?.subscription?.plan_name || "Free Tier";
+  const isSubActive = status?.subscription?.status === "active";
+  const isExpired = status?.subscription?.status === "expired" || status?.subscription?.is_expired;
+  const planName = isSubActive ? (status?.subscription?.plan_name || "Free Tier") : (isExpired ? "Free Tier (Expired)" : "Free Tier");
 
   const tabTitles = {
     "tab-studio": { title: "Side-by-Side Sync Studio", sub: "Source Extract → Modifier Engine → Destination Relay" },
@@ -49,8 +51,8 @@ export default function Header({ activeTab, setActiveTab, status, onOpenLogin, o
             <i className="fa-solid fa-circle-user" style={{ color: "#3b82f6" }}></i>
             <span style={{ color: "#e2e8f0" }}>{userEmail}</span>
             <span style={{ color: "rgba(255, 255, 255, 0.2)" }}>|</span>
-            <span style={{ color: "#fcd535", fontWeight: "600" }}>
-              <i className="fa-solid fa-crown" style={{ fontSize: "10px", marginRight: "3px" }}></i>
+            <span style={{ color: isSubActive ? "#fcd535" : (isExpired ? "#f87171" : "#94a3b8"), fontWeight: "600" }}>
+              <i className={`fa-solid ${isSubActive ? "fa-crown" : (isExpired ? "fa-clock-rotate-left" : "fa-shield-halved")}`} style={{ fontSize: "10px", marginRight: "3px" }}></i>
               {planName}
             </span>
           </div>
