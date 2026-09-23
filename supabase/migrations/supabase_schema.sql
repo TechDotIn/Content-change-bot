@@ -34,10 +34,15 @@ CREATE TABLE IF NOT EXISTS public.user_settings (
     remove_all_links BOOLEAN DEFAULT false,
     keyword_filter TEXT DEFAULT '',
     filter_mode TEXT DEFAULT 'all',
+    routing_pipelines JSONB DEFAULT '[]'::jsonb,
     enabled BOOLEAN DEFAULT true,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
+
+-- Migration Helper: Add routing_pipelines to existing user_settings table if not present
+ALTER TABLE public.user_settings ADD COLUMN IF NOT EXISTS routing_pipelines JSONB DEFAULT '[]'::jsonb;
+
 
 -- 3. Create Sync Logs Table (Per-user sync activity history)
 CREATE TABLE IF NOT EXISTS public.sync_logs (

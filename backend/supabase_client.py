@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import jwt
 from typing import Optional, Dict, Any, List
 from fastapi import Depends, HTTPException, Security, status
@@ -202,18 +203,62 @@ def sign_in_user(email: str, password: str) -> dict:
         raise HTTPException(status_code=401, detail=detail_msg)
 
 
+# --- Local Per-User Pipeline Persistence Helper ---
+def _get_user_pipeline_file(user_id: str) -> str:
+    safe_uid = str(user_id).replace("-", "_")
+    sessions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
+    os.makedirs(sessions_dir, exist_ok=True)
+    return os.path.join(sessions_dir, f"pipelines_{safe_uid}.json")
+
+
+def _save_local_user_pipelines(user_id: str, pipelines: list):
+    try:
+        fpath = _get_user_pipeline_file(user_id)
+        with open(fpath, "w", encoding="utf-8") as f:
+            json.dump(pipelines, f, indent=2)
+    except Exception as e:
+        print(f"⚠️ Notice saving local pipeline file for {user_id[:8]}: {e}")
+
+
+def _load_local_user_pipelines(user_id: str) -> list:
+    try:
+        fpath = _get_user_pipeline_file(user_id)
+        if os.path.exists(fpath):
+            with open(fpath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+    except Exception:
+        pass
+    return []
+
+
 # --- Supabase Database Helper Functions ---
 
 
 def get_user_settings_from_db(user_id: str) -> dict:
     if not IS_SUPABASE_CONFIGURED or not supabase or user_id == "00000000-0000-0000-0000-000000000000":
-        return load_settings()
+        local_settings = load_settings()
+        local_pipes = _load_local_user_pipelines(user_id)
+        if local_pipes:
+            local_settings["routing_pipelines"] = local_pipes
+        return local_settings
 
     try:
         res = supabase.table("user_settings").select("*").eq("user_id", user_id).execute()
         if res.data and len(res.data) > 0:
             merged = DEFAULT_SETTINGS.copy()
             merged.update(res.data[0])
+
+            # Check if Supabase has routing_pipelines or fallback to disk cache
+            db_pipes = merged.get("routing_pipelines")
+            if isinstance(db_pipes, list) and len(db_pipes) > 0:
+                _save_local_user_pipelines(user_id, db_pipes)
+            else:
+                cached_pipes = _load_local_user_pipelines(user_id)
+                if cached_pipes:
+                    merged["routing_pipelines"] = cached_pipes
+
             return merged
         else:
             # Create default settings row for user
@@ -221,14 +266,26 @@ def get_user_settings_from_db(user_id: str) -> dict:
             new_row["user_id"] = user_id
             inserted = supabase.table("user_settings").insert(new_row).execute()
             if inserted.data:
-                return inserted.data[0]
+                res_data = inserted.data[0]
+                cached_pipes = _load_local_user_pipelines(user_id)
+                if cached_pipes:
+                    res_data["routing_pipelines"] = cached_pipes
+                return res_data
     except Exception as e:
         print(f"Error reading user_settings from Supabase for {user_id}: {e}")
 
-    return DEFAULT_SETTINGS.copy()
+    fallback = DEFAULT_SETTINGS.copy()
+    cached_pipes = _load_local_user_pipelines(user_id)
+    if cached_pipes:
+        fallback["routing_pipelines"] = cached_pipes
+    return fallback
 
 
 def save_user_settings_to_db(user_id: str, settings_update: dict) -> dict:
+    # Always persist pipelines to disk cache first for instant recovery
+    if "routing_pipelines" in settings_update and isinstance(settings_update["routing_pipelines"], list):
+        _save_local_user_pipelines(user_id, settings_update["routing_pipelines"])
+
     if not IS_SUPABASE_CONFIGURED or not supabase or user_id == "00000000-0000-0000-0000-000000000000":
         return save_settings(settings_update)
 
@@ -238,7 +295,6 @@ def save_user_settings_to_db(user_id: str, settings_update: dict) -> dict:
         # Merge settings update safely into existing settings
         for k, v in settings_update.items():
             if v is not None:
-                # Do not overwrite existing non-empty channel ID with empty string unless explicitly cleared
                 if k in ["source_channel_id", "destination_channel_id"] and str(v).strip() == "" and existing.get(k):
                     continue
                 existing[k] = v
@@ -251,31 +307,37 @@ def save_user_settings_to_db(user_id: str, settings_update: dict) -> dict:
             "auto_post_telegram", "auto_post_n8n", "text_prefix", "text_suffix",
             "find_text", "replace_text", "replacement_rules", "override_all_links",
             "custom_link_url", "remove_all_links", "override_media_image", "custom_image_url",
-            "strip_media_images", "keyword_filter", "filter_mode",
+            "strip_media_images", "keyword_filter", "filter_mode", "routing_pipelines",
             "enabled", "created_at", "updated_at"
         }
         clean_row = {k: v for k, v in existing.items() if k in valid_cols}
 
-        res = supabase.table("user_settings").upsert(clean_row, on_conflict="user_id").execute()
-        if res.data and len(res.data) > 0:
-            saved_row = res.data[0]
-            print(f"✅ [DB SAVE SUCCESS] user_settings saved for {user_id[:8]}: source={saved_row.get('source_channel_id')}, dest={saved_row.get('destination_channel_id')}")
-            return saved_row
-        else:
-            up_res = supabase.table("user_settings").update(clean_row).eq("user_id", user_id).execute()
-            if up_res.data and len(up_res.data) > 0:
-                print(f"✅ [DB UPDATE FALLBACK SUCCESS] user_settings updated for {user_id[:8]}")
-                return up_res.data[0]
+        try:
+            res = supabase.table("user_settings").upsert(clean_row, on_conflict="user_id").execute()
+            if res.data and len(res.data) > 0:
+                saved_row = res.data[0]
+                if "routing_pipelines" in settings_update:
+                    saved_row["routing_pipelines"] = settings_update["routing_pipelines"]
+                print(f"✅ [DB SAVE SUCCESS] user_settings saved for {user_id[:8]}: source={saved_row.get('source_channel_id')}, dest={saved_row.get('destination_channel_id')}")
+                return saved_row
+        except Exception as col_err:
+            # If Supabase table does not yet have routing_pipelines column, save without it
+            print(f"⚠️ Notice Supabase upsert with full schema: {col_err}. Retrying standard columns...")
+            clean_row_safe = {k: v for k, v in clean_row.items() if k != "routing_pipelines"}
+            res = supabase.table("user_settings").upsert(clean_row_safe, on_conflict="user_id").execute()
+            if res.data and len(res.data) > 0:
+                saved_row = res.data[0]
+                saved_row["routing_pipelines"] = settings_update.get("routing_pipelines") or _load_local_user_pipelines(user_id)
+                print(f"✅ [DB RESILIENT SAVE SUCCESS] user_settings saved for {user_id[:8]}")
+                return saved_row
+
     except Exception as e:
         print(f"❌ Error saving user_settings to Supabase for {user_id}: {e}")
-        try:
-            up_res = supabase.table("user_settings").update(clean_row).eq("user_id", user_id).execute()
-            if up_res.data and len(up_res.data) > 0:
-                print(f"✅ [DB UPDATE FALLBACK SUCCESS] user_settings updated for {user_id[:8]}")
-                return up_res.data[0]
-        except Exception as ex:
-            print(f"❌ Fallback update user_settings failed for {user_id}: {ex}")
 
+    # Fallback to local merge
+    cached_pipes = _load_local_user_pipelines(user_id)
+    if cached_pipes:
+        settings_update["routing_pipelines"] = cached_pipes
     return settings_update
 
 

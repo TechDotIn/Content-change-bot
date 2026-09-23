@@ -95,6 +95,7 @@ class UpdateSettingsRequest(BaseModel):
     strip_media_images: Optional[bool] = None
     keyword_filter: Optional[str] = None
     filter_mode: Optional[str] = None
+    routing_pipelines: Optional[List[Dict[str, Any]]] = None
     enabled: Optional[bool] = None
 
 
@@ -698,7 +699,7 @@ async def update_settings(data: UpdateSettingsRequest, current_user: dict = Depe
     else:
         saved = save_settings(new_data)
 
-    telegram_manager.update_settings_cache(user_id, saved)
+    update_settings_cache(user_id, saved)
     return {"success": True, "settings": saved}
 
 
@@ -737,4 +738,4 @@ async def test_transform_endpoint(data: TestTransformRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=int(PORT), reload=False)
+    uvicorn.run("main:app", host="0.0.0.0", port=int(PORT), reload=True)

@@ -143,8 +143,15 @@ export default function App() {
   useEffect(() => {
     if (session?.access_token && !showLoginPage) {
       fetchStatus();
+      fetchChannels(true);
     }
   }, [session?.access_token, showLoginPage]);
+
+  useEffect(() => {
+    if (status?.connected) {
+      fetchChannels(channels.length === 0);
+    }
+  }, [status?.connected]);
 
   const fetchChannels = async (forceRefresh = false) => {
     try {
@@ -305,6 +312,11 @@ export default function App() {
 
   const handleSaveRules = async (payload) => {
     try {
+      if (Array.isArray(payload.routing_pipelines)) {
+        try {
+          localStorage.setItem("cached_routing_pipelines", JSON.stringify(payload.routing_pipelines));
+        } catch (e) {}
+      }
       const res = await authFetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -313,6 +325,9 @@ export default function App() {
       const data = await res.json();
       if (res.ok && data.success) {
         showToast("Engine Settings & Rules Saved Successfully!", "success");
+        if (data.settings) {
+          setStatus((prev) => ({ ...prev, settings: data.settings }));
+        }
         if (payload.source_channel_id !== undefined) {
           setActiveSourceId(payload.source_channel_id);
           activeSourceIdRef.current = payload.source_channel_id;
