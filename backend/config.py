@@ -26,6 +26,7 @@ DEFAULT_SETTINGS = {
     "strip_media_images": False,
     "keyword_filter": "",
     "filter_mode": "all",  # "all" or "contains"
+    "routing_pipelines": [],
     "enabled": True
 }
 

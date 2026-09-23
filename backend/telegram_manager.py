@@ -628,6 +628,9 @@ class MultiUserTelegramManager:
             proc_lock.release()
             return None
 
+    def update_settings_cache(self, user_id: str, new_settings: dict):
+        update_settings_cache(user_id, new_settings)
+
     def _attach_listener(self, user_id: str, client: TelegramClient):
         if user_id in self.attached_listeners:
             print(f"ℹ️ Listener already attached for User: {user_id[:8]}")
@@ -680,208 +683,281 @@ class MultiUserTelegramManager:
                     except Exception as reply_err:
                         print(f"⚠️ Notice resolving reply context for msg {event.id}: {reply_err}")
 
-                # Filter by Source Channel
-                configured_source = str(settings.get("source_channel_id", "all")).strip()
-                if configured_source and configured_source != "all":
-                    clean_event_chat = str(event.chat_id).replace("-100", "").replace("-", "")
-                    clean_sender_id = str(event.sender_id).replace("-100", "").replace("-", "") if event.sender_id else ""
-                    clean_config_source = configured_source.replace("-100", "").replace("-", "")
+                # Helper to check if incoming chat matches configured source(s)
+                chat_obj = event.chat
+                if not getattr(chat_obj, "title", None) and hasattr(event, "get_chat"):
+                    try:
+                        chat_obj = await event.get_chat()
+                    except Exception:
+                        pass
 
-                    chat_obj = event.chat
-                    if not getattr(chat_obj, "title", None) and hasattr(event, "get_chat"):
-                        try:
-                            chat_obj = await event.get_chat()
-                        except Exception:
-                            pass
+                chat_title = (getattr(chat_obj, "title", None) or getattr(chat_obj, "first_name", None) or "").strip().lower()
+                chat_username = (getattr(chat_obj, "username", None) or "").strip().lower()
 
-                    chat_title = (getattr(chat_obj, "title", None) or getattr(chat_obj, "first_name", None) or "").strip().lower()
-                    chat_username = (getattr(chat_obj, "username", None) or "").strip().lower()
-                    conf_lower = configured_source.lower()
+                def check_matches_sources(sources_cfg) -> bool:
+                    if not sources_cfg:
+                        return True
+                    source_list = sources_cfg if isinstance(sources_cfg, list) else [sources_cfg]
+                    for s in source_list:
+                        s_str = str(s).strip()
+                        if not s_str or s_str.lower() == "all":
+                            return True
+                        clean_event_chat = str(event.chat_id).replace("-100", "").replace("-", "")
+                        clean_sender_id = str(event.sender_id).replace("-100", "").replace("-", "") if event.sender_id else ""
+                        clean_config_source = s_str.replace("-100", "").replace("-", "")
+                        conf_lower = s_str.lower()
 
-                    matches_id = (clean_event_chat == clean_config_source) or (clean_sender_id and clean_sender_id == clean_config_source)
-                    matches_title = bool(chat_title and (conf_lower in chat_title or chat_title in conf_lower))
-                    matches_user = bool(chat_username and (conf_lower.replace("@", "") in chat_username))
+                        matches_id = (clean_event_chat == clean_config_source) or (clean_sender_id and clean_sender_id == clean_config_source)
+                        matches_title = bool(chat_title and (conf_lower in chat_title or chat_title in conf_lower))
+                        matches_user = bool(chat_username and (conf_lower.replace("@", "") in chat_username))
 
-                    if not (matches_id or matches_title or matches_user):
-                        print(f"⏩ [Skip Relay User:{user_id[:8]}] Message chat ({event.chat_id} / '{chat_title}') does not match configured source ({configured_source})")
-                        return
+                        if matches_id or matches_title or matches_user:
+                            return True
+                    return False
+
+                # Extract pipelines or fall back to legacy single-channel pipeline seamlessly
+                raw_pipelines = settings.get("routing_pipelines")
+                active_pipelines = []
+                if isinstance(raw_pipelines, list) and len(raw_pipelines) > 0:
+                    for p in raw_pipelines:
+                        if isinstance(p, dict) and p.get("enabled", True) is not False:
+                            active_pipelines.append(p)
+
+                if not active_pipelines:
+                    # Backward compatibility fallback: use global settings as Default Pipeline
+                    active_pipelines = [{
+                        "id": "legacy_default",
+                        "name": "Default Channel Rule",
+                        "enabled": settings.get("enabled", True),
+                        "source_channels": [settings.get("source_channel_id", "all")] if settings.get("source_channel_id") else ["all"],
+                        "destination_channels": [settings.get("destination_channel_id")] if settings.get("destination_channel_id") else [],
+                        "webhook_url": settings.get("webhook_url", ""),
+                        "auto_post_telegram": settings.get("auto_post_telegram", True),
+                        "auto_post_n8n": settings.get("auto_post_n8n", True),
+                        "text_prefix": settings.get("text_prefix", ""),
+                        "text_suffix": settings.get("text_suffix", ""),
+                        "find_text": settings.get("find_text", ""),
+                        "replace_text": settings.get("replace_text", ""),
+                        "replacement_rules": settings.get("replacement_rules", []),
+                        "override_all_links": settings.get("override_all_links", False),
+                        "custom_link_url": settings.get("custom_link_url", ""),
+                        "remove_all_links": settings.get("remove_all_links", False),
+                        "override_media_image": settings.get("override_media_image", False),
+                        "custom_image_url": settings.get("custom_image_url", ""),
+                        "strip_media_images": settings.get("strip_media_images", False),
+                        "keyword_filter": settings.get("keyword_filter", ""),
+                        "filter_mode": settings.get("filter_mode", "all")
+                    }]
 
                 from main import apply_text_transformation, resolve_telegram_entity
-                transformed_text, should_forward, reason = apply_text_transformation(raw_text, settings)
 
-                log_item = {
-                    "id": event.id,
-                    "chat_id": event.chat_id,
-                    "chat_name": chat_name,
-                    "raw_message": raw_text,
-                    "transformed_message": transformed_text,
-                    "date": event.date.strftime("%Y-%m-%d %H:%M:%S") if event.date else datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "sender_id": event.sender_id,
-                    "status": "pending",
-                    "reason": reason,
-                    "webhook_url": settings.get("webhook_url", ""),
-                    "telegram_posted": False,
-                    "is_reply": is_reply,
-                    "reply_to_msg_id": reply_to_msg_id,
-                    "reply_text": reply_text,
-                    "reply_sender": reply_sender
-                }
+                for pipeline in active_pipelines:
+                    pipeline_name = pipeline.get("name", "Channel Pipeline")
+                    pipe_sources = pipeline.get("source_channels") or pipeline.get("source_channel_ids") or pipeline.get("source_channel_id", "all")
 
-                if not should_forward:
-                    stats["filtered"] += 1
-                    log_item["status"] = "skipped"
-                    add_user_message_log(user_id, log_item)
-                    print(f"⏩ [Filtered User:{user_id[:8]}] Chat: {chat_name} | Reason: {reason}")
-                    return
+                    if not check_matches_sources(pipe_sources):
+                        continue
 
-                # Auto-Posting to Destination Channel
-                auto_post_telegram = settings.get("auto_post_telegram", True)
-                dest_channel_id = str(settings.get("destination_channel_id", "")).strip()
+                    # Merge pipeline-specific transformation settings
+                    pipe_settings = settings.copy()
+                    pipe_settings.update({k: v for k, v in pipeline.items() if v is not None})
+                    if isinstance(pipeline.get("settings"), dict):
+                        pipe_settings.update(pipeline["settings"])
 
-                if auto_post_telegram and dest_channel_id:
-                    clean_dest = dest_channel_id.replace("-100", "").replace("-", "")
-                    clean_event_chat = str(event.chat_id).replace("-100", "").replace("-", "")
+                    transformed_text, should_forward, reason = apply_text_transformation(raw_text, pipe_settings)
 
-                    if clean_event_chat == clean_dest:
-                        print(f"⏩ [Skip Relay] Source chat is destination channel itself ({dest_channel_id})")
-                    else:
-                        try:
-                            dest_entity = await resolve_telegram_entity(client, dest_channel_id)
-                            if not dest_entity:
-                                raise Exception(f"Could not resolve entity for destination channel {dest_channel_id}")
-
-                            override_image = settings.get("override_media_image", False)
-                            custom_image_url = settings.get("custom_image_url", "").strip()
-                            strip_media = settings.get("strip_media_images", False)
-
-                            # Resolve native destination reply ID if replying to a known forwarded message
-                            dest_reply_to_id = None
-                            if is_reply and reply_to_msg_id:
-                                dest_reply_to_id = get_dest_msg_id(user_id, reply_to_msg_id)
-                                 # Auto-match fallback: if parent was posted before bot restart, match by content or recent media in destination
-                                if not dest_reply_to_id:
-                                    try:
-                                        dest_history = await asyncio.wait_for(client.get_messages(dest_entity, limit=10), timeout=2.0)
-                                        if reply_text and reply_text.strip() and not reply_text.startswith("["):
-                                            clean_reply = reply_text.strip()[:50].lower()
-                                            for dm in dest_history:
-                                                dm_text = (dm.raw_text or dm.message or "").strip().lower()
-                                                if dm_text and (clean_reply in dm_text or dm_text in clean_reply or (len(clean_reply) > 10 and clean_reply[:20] in dm_text)):
-                                                    dest_reply_to_id = dm.id
-                                                    record_msg_mapping(user_id, reply_to_msg_id, dm.id)
-                                                    print(f"🎯 [AUTO-MATCH] Linked reply by text to destination msg: ID {dm.id}")
-                                                    break
-                                        if not dest_reply_to_id and dest_history:
-                                            for dm in dest_history:
-                                                if dm.media:
-                                                    dest_reply_to_id = dm.id
-                                                    record_msg_mapping(user_id, reply_to_msg_id, dm.id)
-                                                    print(f"🎯 [AUTO-MATCH] Linked media reply to destination media msg: ID {dm.id}")
-                                                    break
-                                    except Exception as match_err:
-                                        print(f"⚠️ Notice matching parent in destination history: {match_err}")
-
-                            # Always attach clean transformed text, with fallback quote header if native reply ID isn't linked
-                            message_to_send = transformed_text
-                            if is_reply and not dest_reply_to_id:
-                                header = ""
-                                if reply_text:
-                                    snippet = reply_text.strip().replace('\n', ' ')
-                                    if len(snippet) > 70:
-                                        snippet = snippet[:67] + "..."
-                                    header = f"↪ Replying to {reply_sender}: \"{snippet}\"\n\n" if reply_sender else f"↪ Replying to: \"{snippet}\"\n\n"
-                                elif transformed_text and reply_to_msg_id:
-                                    header = f"↪ Replying to message #{reply_to_msg_id}\n\n"
-
-                                if header:
-                                    message_to_send = f"{header}{transformed_text}".strip()
-                                else:
-                                    message_to_send = transformed_text
-
-                            # Detect media attributes: Stickers & animated GIFs CANNOT have captions in Telegram API
-                            doc = getattr(event.media, "document", None) if event.media else None
-                            doc_attrs = [type(a).__name__ for a in getattr(doc, "attributes", [])] if doc else []
-                            is_sticker = "DocumentAttributeSticker" in doc_attrs
-                            is_gif = "DocumentAttributeAnimated" in doc_attrs or "DocumentAttributeVideo" in doc_attrs and getattr(doc, "mime_type", "") == "video/mp4" and any(getattr(a, "nosound", False) for a in getattr(doc, "attributes", []))
-
-                            if is_sticker or is_gif:
-                                caption_to_send = None
-                            else:
-                                caption_to_send = message_to_send if message_to_send else None
-
-                            # Safe send with FloodWait protection & native Telegram reply linking
-                            sent_msg = None
-                            for send_attempt in range(3):
-                                try:
-                                    if strip_media:
-                                        sent_msg = await client.send_message(entity=dest_entity, message=message_to_send, reply_to=dest_reply_to_id)
-                                    elif override_image and custom_image_url:
-                                        sent_msg = await client.send_file(entity=dest_entity, file=custom_image_url, caption=message_to_send, reply_to=dest_reply_to_id)
-                                    elif event.media:
-                                        try:
-                                            sent_msg = await client.send_file(entity=dest_entity, file=event.media, caption=caption_to_send, reply_to=dest_reply_to_id)
-                                        except Exception as media_err:
-                                            print(f"⚠️ Notice send_file with caption failed ({media_err}), retrying send_file without caption...")
-                                            sent_msg = await client.send_file(entity=dest_entity, file=event.media, reply_to=dest_reply_to_id)
-                                    else:
-                                        sent_msg = await client.send_message(entity=dest_entity, message=message_to_send, reply_to=dest_reply_to_id)
-                                    break
-                                except FloodWaitError as fwe:
-                                    wait_secs = fwe.seconds + 1
-                                    print(f"⏳ [FloodWait User:{user_id[:8]}] Rate limited. Sleeping {wait_secs}s before retry...")
-                                    await asyncio.sleep(wait_secs)
-                                    if send_attempt == 2:
-                                        raise
-                                except Exception as send_err:
-                                    # Retry native send if reply_to ID was rejected by Telegram
-                                    if dest_reply_to_id is not None:
-                                        print(f"⚠️ Notice native reply_to={dest_reply_to_id} failed ({send_err}), retrying without reply_to...")
-                                        dest_reply_to_id = None
-                                        continue
-                                    raise
-
-                            if sent_msg and hasattr(sent_msg, "id"):
-                                record_msg_mapping(user_id, event.id, sent_msg.id)
-
-                            log_item["telegram_posted"] = True
-                            stats["forwarded"] += 1
-                            print(f"⚡ [INSTANT RELAY User:{user_id[:8]}] Posted to Telegram destination ({dest_channel_id}) (reply_to={dest_reply_to_id})")
-                        except Exception as tg_err:
-                            print(f"⚠️ [User:{user_id[:8]}] Telegram auto-post error: {tg_err}")
-                            log_item["telegram_error"] = str(tg_err)
-
-                # Non-blocking async background DB log saving
-                asyncio.create_task(asyncio.to_thread(add_user_message_log, user_id, log_item))
-
-                # Non-blocking async n8n Webhook Forwarding
-                auto_post_n8n = settings.get("auto_post_n8n", True)
-                webhook_url = settings.get("webhook_url", "")
-
-                if auto_post_n8n and webhook_url:
-                    payload = {
-                        "user_id": user_id,
+                    log_item = {
+                        "id": event.id,
                         "chat_id": event.chat_id,
                         "chat_name": chat_name,
-                        "message_id": event.id,
-                        "message": transformed_text,
+                        "pipeline_name": pipeline_name,
                         "raw_message": raw_text,
-                        "date": str(event.date),
+                        "transformed_message": transformed_text,
+                        "date": event.date.strftime("%Y-%m-%d %H:%M:%S") if event.date else datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "sender_id": event.sender_id,
+                        "status": "pending",
+                        "reason": reason,
+                        "webhook_url": pipe_settings.get("webhook_url", ""),
+                        "telegram_posted": False,
                         "is_reply": is_reply,
                         "reply_to_msg_id": reply_to_msg_id,
                         "reply_text": reply_text,
                         "reply_sender": reply_sender
                     }
 
-                    async def _async_send_webhook(target_url, body):
-                        try:
-                            loop = asyncio.get_event_loop()
-                            res = await loop.run_in_executor(None, lambda: requests.post(target_url, json=body, timeout=5))
-                            print(f"✅ [User:{user_id[:8]}] Sent to n8n ({chat_name}) | Status: {res.status_code}")
-                        except Exception as wh_err:
-                            print(f"⚠️ Notice sending webhook to {target_url}: {wh_err}")
+                    if not should_forward:
+                        stats["filtered"] += 1
+                        log_item["status"] = "skipped"
+                        add_user_message_log(user_id, log_item)
+                        print(f"⏩ [Filtered User:{user_id[:8]} | Pipeline:{pipeline_name}] Chat: {chat_name} | Reason: {reason}")
+                        continue
 
-                    asyncio.create_task(_async_send_webhook(webhook_url, payload))
+                    # Determine all Destination Channels for this pipeline
+                    dest_cfg = pipeline.get("destination_channels") or pipeline.get("destination_channel_ids") or pipeline.get("destination_channel_id", "")
+                    dest_channels = dest_cfg if isinstance(dest_cfg, list) else ([dest_cfg] if dest_cfg else [])
+                    dest_channels = [str(d).strip() for d in dest_channels if str(d).strip()]
+
+                    auto_post_telegram = pipe_settings.get("auto_post_telegram", True)
+
+                    if auto_post_telegram and dest_channels:
+                        for dest_channel_id in dest_channels:
+                            clean_dest = dest_channel_id.replace("-100", "").replace("-", "")
+                            clean_event_chat = str(event.chat_id).replace("-100", "").replace("-", "")
+
+                            if clean_event_chat == clean_dest:
+                                print(f"⏩ [Skip Relay] Source chat is destination channel itself ({dest_channel_id})")
+                                continue
+
+                            try:
+                                dest_entity = await resolve_telegram_entity(client, dest_channel_id)
+                                if not dest_entity:
+                                    raise Exception(f"Could not resolve entity for destination channel {dest_channel_id}")
+
+                                override_image = pipe_settings.get("override_media_image", False)
+                                custom_image_url = pipe_settings.get("custom_image_url", "").strip()
+                                strip_media = pipe_settings.get("strip_media_images", False)
+
+                                # Resolve native destination reply ID if replying to a known forwarded message
+                                dest_reply_to_id = None
+                                if is_reply and reply_to_msg_id:
+                                    dest_reply_to_id = get_dest_msg_id(user_id, reply_to_msg_id)
+                                    if not dest_reply_to_id:
+                                        try:
+                                            dest_history = await asyncio.wait_for(client.get_messages(dest_entity, limit=10), timeout=2.0)
+                                            if reply_text and reply_text.strip() and not reply_text.startswith("["):
+                                                clean_reply = reply_text.strip()[:50].lower()
+                                                for dm in dest_history:
+                                                    dm_text = (dm.raw_text or dm.message or "").strip().lower()
+                                                    if dm_text and (clean_reply in dm_text or dm_text in clean_reply or (len(clean_reply) > 10 and clean_reply[:20] in dm_text)):
+                                                        dest_reply_to_id = dm.id
+                                                        record_msg_mapping(user_id, reply_to_msg_id, dm.id)
+                                                        print(f"🎯 [AUTO-MATCH] Linked reply by text to destination msg: ID {dm.id}")
+                                                        break
+                                            if not dest_reply_to_id and dest_history:
+                                                for dm in dest_history:
+                                                    if dm.media:
+                                                        dest_reply_to_id = dm.id
+                                                        record_msg_mapping(user_id, reply_to_msg_id, dm.id)
+                                                        print(f"🎯 [AUTO-MATCH] Linked media reply to destination media msg: ID {dm.id}")
+                                                        break
+                                        except Exception as match_err:
+                                            print(f"⚠️ Notice matching parent in destination history: {match_err}")
+
+                                message_to_send = transformed_text
+                                if is_reply and not dest_reply_to_id:
+                                    header = ""
+                                    if reply_text:
+                                        snippet = reply_text.strip().replace('\n', ' ')
+                                        if len(snippet) > 70:
+                                            snippet = snippet[:67] + "..."
+                                        header = f"↪ Replying to {reply_sender}: \"{snippet}\"\n\n" if reply_sender else f"↪ Replying to: \"{snippet}\"\n\n"
+                                    elif transformed_text and reply_to_msg_id:
+                                        header = f"↪ Replying to message #{reply_to_msg_id}\n\n"
+
+                                    if header:
+                                        message_to_send = f"{header}{transformed_text}".strip()
+                                    else:
+                                        message_to_send = transformed_text
+
+                                # Check for real sendable media vs URL link previews / empty media
+                                is_webpage_preview = False
+                                if event.media:
+                                    from telethon.tl.types import MessageMediaWebPage, MessageMediaEmpty, MessageMediaUnsupported
+                                    if isinstance(event.media, (MessageMediaWebPage, MessageMediaEmpty, MessageMediaUnsupported)):
+                                        is_webpage_preview = True
+
+                                has_real_media = bool(event.media and not is_webpage_preview)
+
+                                doc = getattr(event.media, "document", None) if has_real_media else None
+                                doc_attrs = [type(a).__name__ for a in getattr(doc, "attributes", [])] if doc else []
+                                is_sticker = "DocumentAttributeSticker" in doc_attrs
+                                is_gif = "DocumentAttributeAnimated" in doc_attrs or ("DocumentAttributeVideo" in doc_attrs and getattr(doc, "mime_type", "") == "video/mp4" and any(getattr(a, "nosound", False) for a in getattr(doc, "attributes", [])))
+
+                                if is_sticker or is_gif:
+                                    caption_to_send = None
+                                else:
+                                    caption_to_send = message_to_send if message_to_send else None
+
+                                sent_msg = None
+                                for send_attempt in range(3):
+                                    try:
+                                        if strip_media or not has_real_media:
+                                            # Clean message send - handles text, URLs, and allows Telegram to render native previews without file upload errors
+                                            sent_msg = await client.send_message(entity=dest_entity, message=message_to_send, reply_to=dest_reply_to_id)
+                                        elif override_image and custom_image_url:
+                                            sent_msg = await client.send_file(entity=dest_entity, file=custom_image_url, caption=message_to_send, reply_to=dest_reply_to_id)
+                                        elif has_real_media:
+                                            try:
+                                                sent_msg = await client.send_file(entity=dest_entity, file=event.media, caption=caption_to_send, reply_to=dest_reply_to_id)
+                                            except Exception as media_err:
+                                                print(f"⚠️ Notice send_file with caption failed ({media_err}), retrying send_file without caption...")
+                                                try:
+                                                    sent_msg = await client.send_file(entity=dest_entity, file=event.media, reply_to=dest_reply_to_id)
+                                                except Exception as media_err2:
+                                                    print(f"⚠️ Fallback to text send_message due to media error ({media_err2})...")
+                                                    sent_msg = await client.send_message(entity=dest_entity, message=message_to_send, reply_to=dest_reply_to_id)
+                                        else:
+                                            sent_msg = await client.send_message(entity=dest_entity, message=message_to_send, reply_to=dest_reply_to_id)
+                                        break
+                                    except FloodWaitError as fwe:
+                                        wait_secs = fwe.seconds + 1
+                                        print(f"⏳ [FloodWait User:{user_id[:8]}] Rate limited. Sleeping {wait_secs}s before retry...")
+                                        await asyncio.sleep(wait_secs)
+                                        if send_attempt == 2:
+                                            raise
+                                    except Exception as send_err:
+                                        if dest_reply_to_id is not None:
+                                            print(f"⚠️ Notice native reply_to={dest_reply_to_id} failed ({send_err}), retrying without reply_to...")
+                                            dest_reply_to_id = None
+                                            continue
+                                        raise
+
+                                if sent_msg and hasattr(sent_msg, "id"):
+                                    record_msg_mapping(user_id, event.id, sent_msg.id)
+
+                                log_item["telegram_posted"] = True
+                                stats["forwarded"] += 1
+                                print(f"⚡ [INSTANT RELAY User:{user_id[:8]} | Pipeline:{pipeline_name}] Posted to Telegram destination ({dest_channel_id}) (reply_to={dest_reply_to_id})")
+                            except Exception as tg_err:
+                                print(f"⚠️ [User:{user_id[:8]} | Pipeline:{pipeline_name}] Telegram auto-post error for dest {dest_channel_id}: {tg_err}")
+                                log_item["telegram_error"] = str(tg_err)
+
+                            # Stagger multi-channel posts to respect Telegram rate limits and avoid FloodWait
+                            if len(dest_channels) > 1:
+                                await asyncio.sleep(0.35)
+
+                    # Non-blocking async background DB log saving
+                    asyncio.create_task(asyncio.to_thread(add_user_message_log, user_id, log_item))
+
+                    # Non-blocking async n8n Webhook Forwarding
+                    auto_post_n8n = pipe_settings.get("auto_post_n8n", True)
+                    webhook_url = pipe_settings.get("webhook_url", "")
+
+                    if auto_post_n8n and webhook_url:
+                        payload = {
+                            "user_id": user_id,
+                            "pipeline_name": pipeline_name,
+                            "chat_id": event.chat_id,
+                            "chat_name": chat_name,
+                            "message_id": event.id,
+                            "message": transformed_text,
+                            "raw_message": raw_text,
+                            "date": str(event.date),
+                            "sender_id": event.sender_id,
+                            "is_reply": is_reply,
+                            "reply_to_msg_id": reply_to_msg_id,
+                            "reply_text": reply_text,
+                            "reply_sender": reply_sender
+                        }
+
+                        async def _async_send_webhook(target_url, body):
+                            try:
+                                loop = asyncio.get_event_loop()
+                                res = await loop.run_in_executor(None, lambda: requests.post(target_url, json=body, timeout=5))
+                            except Exception as wh_err:
+                                print(f"⚠️ Notice sending webhook to {target_url}: {wh_err}")
+
+                        asyncio.create_task(_async_send_webhook(webhook_url, payload))
 
             except Exception as e:
                 stats["errors"] += 1
@@ -1059,7 +1135,7 @@ class MultiUserTelegramManager:
         now = datetime.now().timestamp()
         if hasattr(self, "user_dialogs_cache"):
             cached = self.user_dialogs_cache.get(user_id)
-            if not force_refresh and cached and (now - cached.get("timestamp", 0) < 60):
+            if not force_refresh and cached and len(cached.get("channels", [])) > 0 and (now - cached.get("timestamp", 0) < 60):
                 print(f"[TELEGRAM_DIALOGS_CACHE] Returning cached dialogs for User: {user_id[:8]}")
                 return cached.get("channels", [])
         else:
