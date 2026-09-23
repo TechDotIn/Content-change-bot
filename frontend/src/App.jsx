@@ -487,6 +487,7 @@ export default function App() {
             status={status}
             onRefresh={fetchStatus}
             showToast={showToast}
+            setActiveTab={setActiveTab}
           />
         )}
       </main>

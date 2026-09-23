@@ -72,3 +72,9 @@ SUPABASE_EDGE_FUNCTION_URL = os.getenv(
     "SUPABASE_EDGE_FUNCTION_URL",
     f"{SUPABASE_URL}/functions/v1" if SUPABASE_URL else ""
 ).strip()
+
+# Notification Bot Configuration (Telegram Bot for subscription alerts)
+NOTIFICATION_BOT_TOKEN = os.getenv("NOTIFICATION_BOT_TOKEN", "").strip()
+NOTIFICATION_BOT_USERNAME = os.getenv("NOTIFICATION_BOT_USERNAME", "").strip()
+# App URL shown in renewal notifications
+APP_URL = os.getenv("APP_URL", "https://telegram.adshatke.site").strip()

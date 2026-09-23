@@ -3,6 +3,10 @@ import React from "react";
 export default function OverviewTab({ status, messages, setActiveTab, onOpenLogin, onDisconnectTelegram }) {
   const stats = status?.stats || { received: 0, forwarded: 0, filtered: 0 };
   const sub = status?.subscription || { plan_name: "Free Tier", status: "active" };
+  const botUsername = status?.notification_bot_username || "";
+  const telegramUserId = status?.user?.id || null;
+  const isBotLinked = !!telegramUserId;
+  const botLink = botUsername ? `https://t.me/${botUsername}?start=notify` : null;
 
   return (
     <section className="tab-content active" id="tab-overview">
@@ -46,6 +50,83 @@ export default function OverviewTab({ status, messages, setActiveTab, onOpenLogi
           <div className="stat-details">
             <h3 style={{ color: "var(--primary-yellow)" }}>{sub.plan_name}</h3>
             <span>Click to manage plan</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Notification Bot Card */}
+      <div className="card mt-20">
+        <div className="card-header">
+          <h3><i className="fa-solid fa-bell"></i> Subscription Renewal Notifications</h3>
+          <span className={`badge ${isBotLinked ? "badge-success" : "badge-outline"}`}>
+            {isBotLinked ? "Telegram Connected" : "Setup Required"}
+          </span>
+        </div>
+        <div className="card-body">
+          <div style={{ display: "flex", alignItems: "flex-start", gap: "16px", flexWrap: "wrap" }}>
+            <div style={{
+              width: "44px", height: "44px", borderRadius: "12px", flexShrink: 0,
+              background: "rgba(252, 213, 53, 0.15)", color: "var(--primary-yellow)",
+              display: "flex", alignItems: "center", justifyContent: "center", fontSize: "20px"
+            }}>
+              <i className="fa-solid fa-robot"></i>
+            </div>
+            <div style={{ flex: 1 }}>
+              <p style={{ fontSize: "13px", color: "#d1d5db", margin: "0 0 6px 0", lineHeight: "1.5" }}>
+                Get automatic Telegram DMs when your subscription is about to expire or has expired — so you never lose access unexpectedly.
+              </p>
+              <ul style={{ fontSize: "12px", color: "var(--text-muted)", paddingLeft: "16px", margin: "0 0 14px 0", lineHeight: "1.8" }}>
+                <li>⏰ <strong>3-day reminder</strong> — advance warning before expiry</li>
+                <li>🔴 <strong>Expiry alert</strong> — instant DM when plan expires</li>
+              </ul>
+
+              {isBotLinked ? (
+                <div style={{
+                  display: "flex", alignItems: "center", gap: "10px",
+                  background: "rgba(16, 185, 129, 0.1)", border: "1px solid rgba(16, 185, 129, 0.3)",
+                  borderRadius: "8px", padding: "10px 14px"
+                }}>
+                  <i className="fa-solid fa-circle-check" style={{ color: "#10b981", fontSize: "16px" }}></i>
+                  <div>
+                    <div style={{ fontSize: "12px", fontWeight: "600", color: "#6ee7b7" }}>Notifications Ready</div>
+                    <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                      Your Telegram account (ID: {telegramUserId}) is connected.
+                      {botLink && (
+                        <> <a href={botLink} target="_blank" rel="noreferrer" style={{ color: "var(--primary-blue)", marginLeft: "4px" }}>Open Bot ↗</a></>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{
+                  background: "rgba(252, 213, 53, 0.06)",
+                  border: "1px dashed rgba(252, 213, 53, 0.35)",
+                  borderRadius: "8px", padding: "12px 14px"
+                }}>
+                  <p style={{ fontSize: "12px", color: "var(--primary-yellow)", margin: "0 0 10px 0", fontWeight: "600" }}>
+                    <i className="fa-solid fa-triangle-exclamation"></i>&nbsp; Connect Telegram to receive bot notifications
+                  </p>
+                  <p style={{ fontSize: "11px", color: "var(--text-muted)", margin: "0 0 10px 0" }}>
+                    First, connect your Telegram account (Overview tab). Then start the notification bot to enable DMs:
+                  </p>
+                  {botLink ? (
+                    <a
+                      href={botLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="btn btn-primary btn-sm"
+                      style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", textDecoration: "none" }}
+                    >
+                      <i className="fa-brands fa-telegram"></i> Start Notification Bot
+                    </a>
+                  ) : (
+                    <div style={{ fontSize: "11px", color: "var(--text-muted)", fontStyle: "italic" }}>
+                      Bot not yet configured by admin. Ask support to set up NOTIFICATION_BOT_USERNAME.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

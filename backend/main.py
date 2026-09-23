@@ -24,6 +24,9 @@ from config import (
     RAZORPAY_KEY_ID,
     RAZORPAY_KEY_SECRET,
     SUPABASE_EDGE_FUNCTION_URL,
+    NOTIFICATION_BOT_TOKEN,
+    NOTIFICATION_BOT_USERNAME,
+    APP_URL,
     load_settings,
     save_settings
 )
@@ -37,7 +40,9 @@ from supabase_client import (
     get_user_sync_logs_from_db,
     get_user_subscription_from_db,
     update_user_subscription_in_db,
-    check_and_expire_all_subscriptions
+    check_and_expire_all_subscriptions,
+    send_bot_notification,
+    get_telegram_user_id_for_sub_user
 )
 from telegram_manager import (
     telegram_manager,
@@ -217,6 +222,85 @@ def apply_text_transformation(text: str, settings: dict) -> tuple[str, bool, str
     return transformed.strip(), True, "Passed all filters"
 
 
+
+# --- Subscription Expiry Reminder Background Loop ---
+async def subscription_reminder_loop():
+    """
+    Runs every 6 hours. Sends a Telegram bot DM to users whose paid subscription
+    expires within the next 3 days, reminding them to renew.
+    Skips users whose telegram_user_id is not stored in profiles.
+    Requires NOTIFICATION_BOT_TOKEN to be set.
+    """
+    REMINDER_INTERVAL_HOURS = 6
+    REMINDER_DAYS_BEFORE = 3  # Send reminder when expiry is <= 3 days away
+
+    while True:
+        await asyncio.sleep(REMINDER_INTERVAL_HOURS * 3600)
+        if not IS_SUPABASE_CONFIGURED or not NOTIFICATION_BOT_TOKEN:
+            continue
+        try:
+            from datetime import datetime, timezone, timedelta
+            from supabase_client import supabase as _sb
+            if not _sb:
+                continue
+
+            now_dt = datetime.now(timezone.utc)
+            remind_before = now_dt + timedelta(days=REMINDER_DAYS_BEFORE)
+            now_iso = now_dt.isoformat()
+            remind_iso = remind_before.isoformat()
+
+            # Query active paid subscriptions expiring within REMINDER_DAYS_BEFORE days
+            res = (
+                _sb.table("subscriptions")
+                .select("user_id, plan_name, plan_id, current_period_end")
+                .eq("status", "active")
+                .neq("plan_id", "free")
+                .gt("current_period_end", now_iso)
+                .lt("current_period_end", remind_iso)
+                .execute()
+            )
+
+            if not res.data:
+                continue
+
+            for sub in res.data:
+                uid = sub.get("user_id")
+                plan_name = sub.get("plan_name", "Paid Plan")
+                expiry_str = sub.get("current_period_end", "")
+                if not uid:
+                    continue
+
+                tg_uid = get_telegram_user_id_for_sub_user(uid)
+                if not tg_uid or tg_uid == "None" or tg_uid == "":
+                    continue
+
+                # Compute days remaining
+                try:
+                    from dateutil import parser as dt_parser
+                    exp_dt = dt_parser.parse(expiry_str)
+                    if exp_dt.tzinfo is None:
+                        exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                    days_left = max(0, (exp_dt - now_dt).days)
+                    expiry_display = exp_dt.strftime("%d %b %Y")
+                except Exception:
+                    days_left = REMINDER_DAYS_BEFORE
+                    expiry_display = "soon"
+
+                msg = (
+                    f"\u23f0 <b>Your Telegram Sync Hub plan expires in {days_left} day{'s' if days_left != 1 else ''}!</b>\n\n"
+                    f"Plan: <b>{plan_name}</b>\n"
+                    f"Expires: <b>{expiry_display}</b>\n\n"
+                    f"Renew now to keep your channels syncing without interruption:\n"
+                    f"\U0001f449 <a href='{APP_URL}'>{APP_URL}</a>"
+                )
+                sent = send_bot_notification(tg_uid, msg)
+                if sent:
+                    print(f"[REMINDER LOOP] Sent {days_left}-day expiry reminder to user {uid} (tg: {tg_uid})")
+
+        except Exception as e:
+            print(f"[REMINDER LOOP] Error in subscription reminder loop: {e}")
+
+
 # --- Lifespan Context Manager ---
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
@@ -227,6 +311,7 @@ async def lifespan(app_instance: FastAPI):
             print(f"[STARTUP] Error checking expired subscriptions: {e}")
     await telegram_manager.start()
     create_tracked_task(telegram_manager.connection_watchdog())
+    create_tracked_task(subscription_reminder_loop())
     yield
     print("🔌 Graceful Shutdown: Disconnecting Telegram clients & cleaning tasks...")
     await telegram_manager.disconnect_all()
@@ -382,6 +467,7 @@ async def get_status(current_user: dict = Depends(get_current_user)):
         "subscription": subscription,
         "razorpay_key_id": RAZORPAY_KEY_ID,
         "edge_function_url": SUPABASE_EDGE_FUNCTION_URL,
+        "notification_bot_username": NOTIFICATION_BOT_USERNAME,
         "supabase_configured": IS_SUPABASE_CONFIGURED
     }
 

@@ -124,11 +124,38 @@ export default function StudioTab({
   const safeActiveIndex = Math.min(activePipelineIndex, currentPipelines.length - 1);
   const activePipe = currentPipelines[safeActiveIndex] || createInitialPipeline(settings);
 
+  // Plan-based pipeline limits (must come after currentPipelines is defined)
+  const isSubActive = status?.subscription?.status === "active";
+  const currentPlan = isSubActive ? (status?.subscription?.plan_id || "free") : "free";
+  const isPro = currentPlan === "plan_799";
+  const isBasic = currentPlan === "plan_599";
+  // Basic (599): max 1 channel rule. Pro (799): unlimited.
+  const maxPipelines = isPro ? Infinity : isBasic ? 1 : 1;
+  const canAddPipeline = currentPipelines.length < maxPipelines;
+
   // Helper to update active pipeline
   const updateActivePipe = (fields) => {
     const copy = [...(pipelines.length > 0 ? pipelines : [createInitialPipeline(settings)])];
     copy[safeActiveIndex] = { ...copy[safeActiveIndex], ...fields };
     persistPipelines(copy);
+  };
+
+  // Reverse-route conflict checker
+  // Returns true if adding (newSrc → newDest) pair would create a circular/reverse conflict
+  // with any existing pair (newDest → newSrc) across ALL pipelines (excluding `excludePipelineIndex`).
+  const hasReverseConflict = (newSrc, newDest, excludePipelineIndex = -1) => {
+    if (!newSrc || !newDest || newSrc === "all") return false;
+    for (let i = 0; i < currentPipelines.length; i++) {
+      if (i === excludePipelineIndex) continue;
+      const pipe = currentPipelines[i];
+      const pSrcs = pipe.source_channels || [];
+      const pDests = pipe.destination_channels || [];
+      // Conflict: another pipeline has source=newDest AND destination=newSrc
+      const srcMatch = pSrcs.some((s) => isChannelMatch(s, newDest));
+      const destMatch = pDests.some((d) => isChannelMatch(d, newSrc));
+      if (srcMatch && destMatch) return true;
+    }
+    return false;
   };
 
   // Add new pipeline
@@ -398,22 +425,45 @@ export default function StudioTab({
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <button
-              className="btn btn-outline btn-sm"
-              onClick={handleAddPipeline}
-              style={{
-                background: "rgba(59, 130, 246, 0.15)",
-                borderColor: "var(--primary-blue)",
-                color: "#60a5fa",
-                fontSize: "12px",
-                padding: "6px 14px",
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "6px"
-              }}
-            >
-              <i className="fa-solid fa-plus"></i> Add Channel Rule
-            </button>
+            {canAddPipeline ? (
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={handleAddPipeline}
+                style={{
+                  background: "rgba(59, 130, 246, 0.15)",
+                  borderColor: "var(--primary-blue)",
+                  color: "#60a5fa",
+                  fontSize: "12px",
+                  padding: "6px 14px",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px"
+                }}
+              >
+                <i className="fa-solid fa-plus"></i> Add Channel Rule
+              </button>
+            ) : (
+              <div
+                title="Upgrade to Pro (₹799) to add multiple channel rules"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  background: "rgba(252, 213, 53, 0.08)",
+                  border: "1px dashed rgba(252, 213, 53, 0.45)",
+                  borderRadius: "8px",
+                  padding: "5px 12px",
+                  fontSize: "11px",
+                  color: "var(--primary-yellow)",
+                  cursor: "default"
+                }}
+              >
+                <i className="fa-solid fa-lock" style={{ fontSize: "10px" }}></i>
+                <span>
+                  1 Rule Limit — <strong style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => alert("Upgrade to the Pro plan (₹799/month) to unlock unlimited channel routing rules!")}>Upgrade to Pro ↗</strong>
+                </span>
+              </div>
+            )}
             <button
               className="btn btn-primary btn-sm"
               onClick={handleSave}
@@ -544,6 +594,13 @@ export default function StudioTab({
                   } else {
                     const filtered = current.filter((c) => c !== "all");
                     if (!filtered.some((c) => isChannelMatch(c, val))) {
+                      // Check for reverse conflict: does any pipeline already have source=dest AND dest=val?
+                      const dests = activePipe.destination_channels || [];
+                      const conflictDest = dests.find((d) => hasReverseConflict(val, d, safeActiveIndex));
+                      if (conflictDest) {
+                        alert(`⚠️ Reverse route conflict!\n\nAnother channel rule already routes from "${getChannelName(conflictDest)}" → "${getChannelName(val)}".\nAdding "${getChannelName(val)}" as a source here would create a circular loop.`);
+                        return;
+                      }
                       updateActivePipe({ source_channels: [...filtered, val] });
                     }
                   }
@@ -634,6 +691,13 @@ export default function StudioTab({
                   if (!val) return;
                   const current = activePipe.destination_channels || [];
                   if (!current.some((c) => isChannelMatch(c, val))) {
+                    // Check for reverse conflict: does any pipeline already have source=val AND destination=any of our sources?
+                    const srcs = (activePipe.source_channels || []).filter((s) => s !== "all");
+                    const conflictSrc = srcs.find((s) => hasReverseConflict(s, val, safeActiveIndex));
+                    if (conflictSrc) {
+                      alert(`⚠️ Reverse route conflict!\n\nAnother channel rule already routes from "${getChannelName(val)}" → "${getChannelName(conflictSrc)}".\nAdding "${getChannelName(val)}" as a destination here would create a circular loop.`);
+                      return;
+                    }
                     updateActivePipe({ destination_channels: [...current, val] });
                   }
                 }}
