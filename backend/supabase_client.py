@@ -435,6 +435,59 @@ def get_all_users_with_telegram_sessions() -> List[dict]:
 
 # --- Supabase Subscription Helper Functions ---
 
+def check_and_expire_all_subscriptions():
+    """Batch expire all active subscriptions whose current_period_end or computed 30-day validity is in the past."""
+    if not IS_SUPABASE_CONFIGURED or not supabase:
+        return
+    try:
+        from datetime import datetime, timezone, timedelta
+        from dateutil import parser as dt_parser
+        now_dt = datetime.now(timezone.utc)
+        now_iso = now_dt.isoformat()
+
+        # 1. Update records with explicit current_period_end < now
+        res = (
+            supabase.table("subscriptions")
+            .update({"status": "expired", "updated_at": now_iso})
+            .eq("status", "active")
+            .neq("plan_id", "free")
+            .lt("current_period_end", now_iso)
+            .execute()
+        )
+        if res.data and len(res.data) > 0:
+            print(f"[SUBSCRIPTION BATCH] Automatically expired {len(res.data)} outdated subscriptions in DB.")
+
+        # 2. Check active records where current_period_end is null but plan is a paid plan
+        null_res = (
+            supabase.table("subscriptions")
+            .select("*")
+            .eq("status", "active")
+            .neq("plan_id", "free")
+            .is_("current_period_end", "null")
+            .execute()
+        )
+        if null_res.data:
+            for s in null_res.data:
+                start_str = s.get("current_period_start") or s.get("created_at")
+                if start_str:
+                    try:
+                        s_dt = dt_parser.parse(str(start_str))
+                        if s_dt.tzinfo is None:
+                            s_dt = s_dt.replace(tzinfo=timezone.utc)
+                        period_end = s_dt + timedelta(days=30)
+                        if now_dt > period_end:
+                            supabase.table("subscriptions").update({
+                                "status": "expired",
+                                "current_period_end": period_end.isoformat(),
+                                "updated_at": now_iso
+                            }).eq("id", s["id"]).execute()
+                            print(f"[SUBSCRIPTION BATCH] Expired subscription {s['id']} (user {s.get('user_id')}) whose 30-day period ended on {period_end.isoformat()}.")
+                    except Exception as parse_e:
+                        print(f"Error checking sub {s.get('id')}: {parse_e}")
+    except Exception as e:
+        print(f"[SUBSCRIPTION BATCH] Notice during batch check: {e}")
+
+
 def get_user_subscription_from_db(user_id: str) -> dict:
     default_sub = {
         "user_id": user_id,
@@ -443,7 +496,8 @@ def get_user_subscription_from_db(user_id: str) -> dict:
         "amount_paid": 0,
         "status": "active",
         "current_period_start": None,
-        "current_period_end": None
+        "current_period_end": None,
+        "is_expired": False
     }
     if not IS_SUPABASE_CONFIGURED or not supabase or user_id == "00000000-0000-0000-0000-000000000000":
         return default_sub
@@ -453,12 +507,70 @@ def get_user_subscription_from_db(user_id: str) -> dict:
         if res.data and len(res.data) > 0:
             sub = res.data[0]
             plan_id = str(sub.get("plan_id", "")).lower()
+            current_end_str = sub.get("current_period_end")
+            is_expired = False
+            effective_end_str = current_end_str
+
+            # Check if status is already marked expired
+            if sub.get("status") == "expired":
+                is_expired = True
+            elif plan_id != "free":
+                try:
+                    from dateutil import parser as dt_parser
+                    from datetime import datetime, timezone, timedelta
+                    now_dt = datetime.now(timezone.utc)
+
+                    if current_end_str:
+                        end_dt = dt_parser.parse(str(current_end_str))
+                        if end_dt.tzinfo is None:
+                            end_dt = end_dt.replace(tzinfo=timezone.utc)
+                        if now_dt > end_dt:
+                            is_expired = True
+                    else:
+                        # Fallback for paid plans where current_period_end was not explicitly set: 30 days from start or created_at
+                        start_str = sub.get("current_period_start") or sub.get("created_at")
+                        if start_str:
+                            start_dt = dt_parser.parse(str(start_str))
+                            if start_dt.tzinfo is None:
+                                start_dt = start_dt.replace(tzinfo=timezone.utc)
+                            computed_end_dt = start_dt + timedelta(days=30)
+                            effective_end_str = computed_end_dt.isoformat()
+                            if now_dt > computed_end_dt:
+                                is_expired = True
+                except Exception as parse_e:
+                    print(f"Error checking subscription expiry: {parse_e}")
+
+            if is_expired:
+                # Update database so status reflects expired
+                if sub.get("status") != "expired" or not sub.get("current_period_end"):
+                    try:
+                        from datetime import datetime, timezone
+                        now_iso = datetime.now(timezone.utc).isoformat()
+                        update_payload = {
+                            "status": "expired",
+                            "updated_at": now_iso
+                        }
+                        if not sub.get("current_period_end") and effective_end_str:
+                            update_payload["current_period_end"] = effective_end_str
+                        supabase.table("subscriptions").update(update_payload).eq("user_id", user_id).execute()
+                        print(f"[SUBSCRIPTION] Subscription for user {user_id} expired. Updated status in DB to 'expired'.")
+                    except Exception as upd_err:
+                        print(f"[SUBSCRIPTION] Error updating expired status in Supabase: {upd_err}")
+
+                sub["status"] = "expired"
+                sub["is_expired"] = True
+                sub["plan_id"] = "free"
+                sub["plan_name"] = "Free Tier"
+                return sub
+
+            # Subscription is currently active
             if "799" in plan_id or "pro" in plan_id:
                 sub["plan_name"] = "Pro Plan (₹799)"
             elif "599" in plan_id or "basic" in plan_id:
                 sub["plan_name"] = "Basic Plan (₹599)"
             elif not sub.get("plan_name"):
                 sub["plan_name"] = "Active Plan"
+            sub["is_expired"] = False
             return sub
 
         # Fallback check in profiles table
@@ -473,7 +585,8 @@ def get_user_subscription_from_db(user_id: str) -> dict:
                     "plan_id": p_plan,
                     "plan_name": p_name,
                     "amount_paid": 799 if ("799" in p_plan or "pro" in p_plan) else 599,
-                    "status": "active"
+                    "status": "active",
+                    "is_expired": False
                 }
 
         # Create default free subscription record
@@ -492,6 +605,7 @@ def update_user_subscription_in_db(user_id: str, sub_data: dict) -> dict:
 
     try:
         sub_data["user_id"] = user_id
+        invalidate_user_subscription_cache(user_id)
         # Use on_conflict="user_id" so upsert updates existing user record without unique key constraint failure
         res = supabase.table("subscriptions").upsert(sub_data, on_conflict="user_id").execute()
         if res.data and len(res.data) > 0:
@@ -519,3 +633,21 @@ def update_user_subscription_in_db(user_id: str, sub_data: dict) -> dict:
             print(f"[SUPABASE DB ERROR] Secondary fallback update failed for {user_id}: {ex}")
 
     return sub_data
+
+
+_user_sub_cache: Dict[str, Any] = {}
+
+def get_cached_user_subscription(user_id: str) -> dict:
+    """Returns cached subscription status with 15-second TTL to avoid DB flooding on every message."""
+    import time
+    now = time.time()
+    cached = _user_sub_cache.get(user_id)
+    if cached and (now - cached.get("cached_at", 0) < 15):
+        return cached["sub"]
+    sub = get_user_subscription_from_db(user_id)
+    _user_sub_cache[user_id] = {"sub": sub, "cached_at": now}
+    return sub
+
+def invalidate_user_subscription_cache(user_id: str):
+    """Clears cached subscription data for a user upon plan change or renewal."""
+    _user_sub_cache.pop(user_id, None)

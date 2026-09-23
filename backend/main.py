@@ -36,7 +36,8 @@ from supabase_client import (
     get_user_profile_from_db,
     get_user_sync_logs_from_db,
     get_user_subscription_from_db,
-    update_user_subscription_in_db
+    update_user_subscription_in_db,
+    check_and_expire_all_subscriptions
 )
 from telegram_manager import (
     telegram_manager,
@@ -107,6 +108,17 @@ class VerifyCodeRequest(BaseModel):
     phone_number: str
     code: str
     password: Optional[str] = None
+
+
+class CreateOrderRequest(BaseModel):
+    plan_id: str
+
+
+class VerifyPaymentRequest(BaseModel):
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+    plan_id: str
 
 
 class TestTransformRequest(BaseModel):
@@ -208,6 +220,11 @@ def apply_text_transformation(text: str, settings: dict) -> tuple[str, bool, str
 # --- Lifespan Context Manager ---
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
+    if IS_SUPABASE_CONFIGURED:
+        try:
+            check_and_expire_all_subscriptions()
+        except Exception as e:
+            print(f"[STARTUP] Error checking expired subscriptions: {e}")
     await telegram_manager.start()
     create_tracked_task(telegram_manager.connection_watchdog())
     yield
@@ -733,6 +750,112 @@ async def test_transform_endpoint(data: TestTransformRequest):
         "transformed_text": transformed,
         "should_forward": should_forward,
         "reason": reason
+    }
+
+
+PLAN_DETAILS = {
+    "plan_599": {"amount": 59900, "price": 599, "name": "Basic Plan (₹599)"},
+    "plan_799": {"amount": 79900, "price": 799, "name": "Pro Plan (₹799)"}
+}
+
+
+@app.post("/api/subscription/create-order")
+async def create_subscription_order(
+    data: CreateOrderRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    plan_id = data.plan_id.lower().strip()
+    if plan_id not in PLAN_DETAILS:
+        raise HTTPException(status_code=400, detail="Invalid plan selected. Choose 'plan_599' or 'plan_799'.")
+
+    if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
+        raise HTTPException(status_code=500, detail="Razorpay payment keys are not configured on server.")
+
+    plan_info = PLAN_DETAILS[plan_id]
+    user_id = current_user["id"]
+    user_email = current_user.get("email", "")
+
+    try:
+        import time
+        auth = (RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)
+        payload = {
+            "amount": plan_info["amount"],
+            "currency": "INR",
+            "receipt": f"rcpt_{int(time.time())}_{user_id[:8]}",
+            "notes": {
+                "user_id": user_id,
+                "email": user_email,
+                "plan_id": plan_id,
+                "plan_name": plan_info["name"]
+            }
+        }
+        res = requests.post("https://api.razorpay.com/v1/orders", json=payload, auth=auth, timeout=10)
+        res_data = res.json()
+
+        if res.status_code != 200 or "id" not in res_data:
+            err_msg = res_data.get("error", {}).get("description") or "Razorpay order creation failed"
+            raise HTTPException(status_code=400, detail=err_msg)
+
+        return {
+            "success": True,
+            "order_id": res_data["id"],
+            "amount": res_data["amount"],
+            "currency": res_data["currency"],
+            "key_id": RAZORPAY_KEY_ID,
+            "plan_id": plan_id,
+            "plan_name": plan_info["name"]
+        }
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Order generation error: {str(e)}")
+
+
+@app.post("/api/subscription/verify-payment")
+async def verify_subscription_payment(
+    data: VerifyPaymentRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    user_id = current_user["id"]
+    plan_id = data.plan_id.lower().strip()
+    plan_info = PLAN_DETAILS.get(plan_id, {"amount": 59900, "price": 599, "name": "Basic Plan (₹599)"})
+
+    if not RAZORPAY_KEY_SECRET:
+        raise HTTPException(status_code=500, detail="Razorpay secret key not configured on server.")
+
+    # Verify HMAC SHA256 Signature
+    msg = f"{data.razorpay_order_id}|{data.razorpay_payment_id}"
+    expected_sig = hmac.new(
+        RAZORPAY_KEY_SECRET.encode("utf-8"),
+        msg.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+
+    if expected_sig != data.razorpay_signature:
+        raise HTTPException(status_code=400, detail="Invalid Razorpay signature. Payment verification failed.")
+
+    from datetime import datetime, timezone, timedelta
+    now_dt = datetime.now(timezone.utc)
+    period_end_dt = now_dt + timedelta(days=30)
+
+    sub_record = {
+        "user_id": user_id,
+        "plan_id": plan_id,
+        "plan_name": plan_info["name"],
+        "amount_paid": plan_info["price"],
+        "status": "active",
+        "razorpay_order_id": data.razorpay_order_id,
+        "razorpay_payment_id": data.razorpay_payment_id,
+        "current_period_start": now_dt.isoformat(),
+        "current_period_end": period_end_dt.isoformat(),
+        "updated_at": now_dt.isoformat()
+    }
+
+    saved_sub = update_user_subscription_in_db(user_id, sub_record)
+    return {
+        "success": True,
+        "message": f"🎉 Payment verified! {plan_info['name']} activated successfully.",
+        "subscription": saved_sub
     }
 
 
