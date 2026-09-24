@@ -301,6 +301,208 @@ async def subscription_reminder_loop():
             print(f"[REMINDER LOOP] Error in subscription reminder loop: {e}")
 
 
+# --- Telegram Notification Bot Interactive Listener ---
+
+def reply_to_bot_chat(chat_id: int | str, text: str):
+    try:
+        if not NOTIFICATION_BOT_TOKEN:
+            return
+        url = f"https://api.telegram.org/bot{NOTIFICATION_BOT_TOKEN}/sendMessage"
+        requests.post(url, json={
+            "chat_id": str(chat_id),
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }, timeout=10)
+    except Exception as e:
+        print(f"[BOT] Error sending reply to {chat_id}: {e}")
+
+
+async def handle_bot_command(chat_id: int | str, tg_user_id: int | str, first_name: str, raw_text: str):
+    cmd_parts = raw_text.strip().split()
+    cmd = cmd_parts[0].lower() if cmd_parts else ""
+    arg = cmd_parts[1].strip() if len(cmd_parts) > 1 else ""
+
+    from supabase_client import supabase as _sb
+
+    if cmd in ("/start", "start"):
+        # If deep link argument provided: /start <userId or email>
+        if arg and _sb:
+            target = arg.strip()
+            try:
+                res = _sb.table("profiles").select("id, email").or_(f"id.eq.{target},email.eq.{target}").execute()
+                if res.data and len(res.data) > 0:
+                    matched = res.data[0]
+                    _sb.table("profiles").update({"telegram_user_id": str(tg_user_id)}).eq("id", matched["id"]).execute()
+                    reply_to_bot_chat(chat_id, (
+                        f"👋 <b>Hello, {first_name}!</b>\n\n"
+                        f"✅ Your Telegram account is now linked to <b>{matched.get('email', 'your account')}</b>!\n\n"
+                        f"You will receive automatic alerts before your subscription expires.\n\n"
+                        f"Commands:\n"
+                        f"• /status - View subscription status\n"
+                        f"• /help - Help & info"
+                    ))
+                    return
+            except Exception as link_err:
+                print(f"[BOT] Deep link error: {link_err}")
+
+        # Check if already linked in profiles
+        linked_email = None
+        if _sb:
+            try:
+                res = _sb.table("profiles").select("email").eq("telegram_user_id", str(tg_user_id)).execute()
+                if res.data and len(res.data) > 0:
+                    linked_email = res.data[0].get("email")
+            except Exception:
+                pass
+
+        if linked_email:
+            reply_to_bot_chat(chat_id, (
+                f"👋 <b>Welcome back, {first_name}!</b>\n\n"
+                f"✅ Connected to TelegramSync Hub account: <b>{linked_email}</b>\n\n"
+                f"📋 <b>Commands:</b>\n"
+                f"• /status - Check active plan & expiration\n"
+                f"• /help - How to use this bot\n"
+                f"• /link &lt;email&gt; - Relink with a different email\n\n"
+                f"🌐 Dashboard: <a href='{APP_URL}'>{APP_URL}</a>"
+            ))
+        else:
+            reply_to_bot_chat(chat_id, (
+                f"👋 <b>Hello, {first_name}!</b>\n\n"
+                f"Welcome to <b>TelegramSync Hub Subscription Bot</b>! 🚀\n\n"
+                f"I will send you real-time reminders before your subscription expires so your Telegram channels keep syncing without downtime.\n\n"
+                f"🔗 <b>To connect your account</b>, reply with your registered email:\n"
+                f"<code>/link your_email@example.com</code>\n\n"
+                f"🌐 Or open your dashboard:\n"
+                f"👉 <a href='{APP_URL}'>{APP_URL}</a>"
+            ))
+
+    elif cmd in ("/link", "link"):
+        if not arg or "@" not in arg:
+            reply_to_bot_chat(chat_id, (
+                f"⚠️ Please provide your registered account email.\n\n"
+                f"Example: <code>/link user@gmail.com</code>"
+            ))
+            return
+
+        email_to_link = arg.strip().lower()
+        if not _sb:
+            reply_to_bot_chat(chat_id, "⚠️ Database is temporarily unavailable. Please try again shortly.")
+            return
+
+        try:
+            res = _sb.table("profiles").select("id, email").ilike("email", email_to_link).execute()
+            if res.data and len(res.data) > 0:
+                user_record = res.data[0]
+                _sb.table("profiles").update({"telegram_user_id": str(tg_user_id)}).eq("id", user_record["id"]).execute()
+                reply_to_bot_chat(chat_id, (
+                    f"✅ <b>Successfully Linked!</b>\n\n"
+                    f"Your Telegram account has been linked to <b>{user_record.get('email')}</b>.\n"
+                    f"You will now receive subscription notifications and expiry reminders directly here!\n\n"
+                    f"Type /status anytime to inspect your current plan."
+                ))
+            else:
+                reply_to_bot_chat(chat_id, (
+                    f"❌ <b>Account Not Found</b>\n\n"
+                    f"No registered account was found with email <code>{email_to_link}</code>.\n\n"
+                    f"Please make sure you registered at <a href='{APP_URL}'>{APP_URL}</a> with this email."
+                ))
+        except Exception as e:
+            reply_to_bot_chat(chat_id, f"⚠️ Error linking account: {e}")
+
+    elif cmd in ("/status", "status"):
+        if not _sb:
+            reply_to_bot_chat(chat_id, "⚠️ Database is temporarily unavailable.")
+            return
+
+        try:
+            res = _sb.table("profiles").select("id, email").eq("telegram_user_id", str(tg_user_id)).execute()
+            if not res.data or len(res.data) == 0:
+                reply_to_bot_chat(chat_id, (
+                    f"ℹ️ Your Telegram is not linked to any TelegramSync Hub account yet.\n\n"
+                    f"Reply with: <code>/link your_registered_email@example.com</code>"
+                ))
+                return
+
+            p_id = res.data[0]["id"]
+            p_email = res.data[0].get("email", "")
+            sub = get_user_subscription_from_db(p_id)
+            plan_name = sub.get("plan_name", "Free Plan")
+            status_text = (sub.get("status") or "inactive").upper()
+            end_date = sub.get("current_period_end") or "N/A"
+
+            reply_to_bot_chat(chat_id, (
+                f"📊 <b>Subscription Status</b>\n\n"
+                f"👤 Account: <b>{p_email}</b>\n"
+                f"📦 Plan: <b>{plan_name}</b>\n"
+                f"⚡ Status: <b>{status_text}</b>\n"
+                f"📅 Expiry Date: <b>{str(end_date)[:19]}</b>\n\n"
+                f"Manage or renew your plan:\n"
+                f"👉 <a href='{APP_URL}'>{APP_URL}</a>"
+            ))
+        except Exception as e:
+            reply_to_bot_chat(chat_id, f"⚠️ Error fetching subscription: {e}")
+
+    elif cmd in ("/help", "help"):
+        reply_to_bot_chat(chat_id, (
+            f"ℹ️ <b>TelegramSync Hub Bot Help</b>\n\n"
+            f"• <code>/start</code> - Start bot and view status\n"
+            f"• <code>/link your_email@example.com</code> - Connect your account\n"
+            f"• <code>/status</code> - View current plan & expiration\n"
+            f"• <code>/help</code> - Show this menu\n\n"
+            f"🌐 Website: <a href='{APP_URL}'>{APP_URL}</a>"
+        ))
+
+
+async def notification_bot_listener():
+    """
+    Active polling loop for Telegram Bot (@contentchangesubsreminderbot).
+    Listens for /start, /link, /status, /help commands.
+    """
+    if not NOTIFICATION_BOT_TOKEN:
+        print("[BOT LISTENER] No NOTIFICATION_BOT_TOKEN configured. Polling listener idle.")
+        return
+
+    print("🤖 [BOT LISTENER] Starting polling loop for Telegram Notification Bot...")
+    offset = 0
+
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{NOTIFICATION_BOT_TOKEN}/getUpdates"
+            params = {"offset": offset, "timeout": 20}
+
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(None, lambda: requests.get(url, params=params, timeout=25))
+
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("ok"):
+                    updates = data.get("result", [])
+                    for upd in updates:
+                        offset = max(offset, upd["update_id"] + 1)
+                        msg = upd.get("message")
+                        if not msg:
+                            continue
+
+                        text = (msg.get("text") or "").strip()
+                        chat = msg.get("chat", {})
+                        chat_id = chat.get("id")
+                        from_user = msg.get("from", {})
+                        tg_user_id = from_user.get("id")
+                        first_name = from_user.get("first_name", "User")
+
+                        if chat_id and text:
+                            create_tracked_task(handle_bot_command(chat_id, tg_user_id, first_name, text))
+            else:
+                await asyncio.sleep(5)
+
+        except asyncio.CancelledError:
+            print("🤖 [BOT LISTENER] Bot listener shutting down.")
+            break
+        except Exception as e:
+            await asyncio.sleep(5)
+
+
 # --- Lifespan Context Manager ---
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
@@ -312,6 +514,7 @@ async def lifespan(app_instance: FastAPI):
     await telegram_manager.start()
     create_tracked_task(telegram_manager.connection_watchdog())
     create_tracked_task(subscription_reminder_loop())
+    create_tracked_task(notification_bot_listener())
     yield
     print("🔌 Graceful Shutdown: Disconnecting Telegram clients & cleaning tasks...")
     await telegram_manager.disconnect_all()

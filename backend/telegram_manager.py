@@ -1115,7 +1115,8 @@ class MultiUserTelegramManager:
                         "telegram_session_string": session_string,
                         "telegram_phone": phone_number,
                         "telegram_first_name": me.first_name,
-                        "telegram_username": me.username or ""
+                        "telegram_username": me.username or "",
+                        "telegram_user_id": str(me.id)
                     })
 
                 self._attach_listener(user_id, client)
