@@ -556,6 +556,7 @@ class MultiUserTelegramManager:
 
         try:
             client = build_telegram_client(StringSession(session_str))
+            client._user_id_ref = user_id
             await client.connect()
 
             if not await client.is_user_authorized():
@@ -1051,6 +1052,7 @@ class MultiUserTelegramManager:
                         pass
 
                 client = build_telegram_client(StringSession())
+                client._user_id_ref = user_id
                 await client.connect()
 
             try:

@@ -550,7 +550,8 @@ async def resolve_telegram_entity(client, channel_id: str):
         return None
 
     ch_str = str(channel_id).strip()
-    cache_key = f"{id(client)}_{ch_str}"
+    client_key = getattr(client, "_user_id_ref", None) or id(client)
+    cache_key = f"{client_key}_{ch_str}"
     if cache_key in RESOLVED_ENTITIES_CACHE:
         return RESOLVED_ENTITIES_CACHE[cache_key]
 

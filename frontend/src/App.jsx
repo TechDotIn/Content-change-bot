@@ -99,6 +99,9 @@ export default function App() {
         setSettingsLoaded(false);
         setActiveSourceId(null);
         setActiveDestId(null);
+        setChannels([]);
+        setSourceMessages([]);
+        setDestinationMessages([]);
       }
       setAuthLoading(false);
     });
@@ -164,10 +167,8 @@ export default function App() {
         return;
       }
       const data = await res.json();
-      if (data.success && Array.isArray(data.channels) && data.channels.length > 0) {
+      if (data.success && Array.isArray(data.channels)) {
         setChannels(data.channels);
-      } else if (data.success && Array.isArray(data.channels)) {
-        setChannels((prev) => (prev && prev.length > 0 ? prev : []));
       } else {
         console.warn("[fetchChannels] API returned non-success:", data.detail || data.error || "No channels available");
       }
@@ -314,7 +315,8 @@ export default function App() {
     try {
       if (Array.isArray(payload.routing_pipelines)) {
         try {
-          localStorage.setItem("cached_routing_pipelines", JSON.stringify(payload.routing_pipelines));
+          const userKey = session?.user?.id ? `cached_routing_pipelines_${session.user.id}` : "cached_routing_pipelines";
+          localStorage.setItem(userKey, JSON.stringify(payload.routing_pipelines));
         } catch (e) {}
       }
       const res = await authFetch("/api/settings", {
@@ -351,8 +353,13 @@ export default function App() {
     if (destAbortRef.current) destAbortRef.current.abort();
 
     localStorage.removeItem("sb_access_token");
+    localStorage.removeItem("cached_routing_pipelines");
+    if (session?.user?.id) {
+      localStorage.removeItem(`cached_routing_pipelines_${session.user.id}`);
+    }
     setSession(null);
     setShowLoginPage(true);
+    setStatus(null);
     setSettingsLoaded(false);
     setActiveSourceId(null);
     setActiveDestId(null);

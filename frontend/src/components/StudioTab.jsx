@@ -128,23 +128,26 @@ export default function StudioTab({
   const isAuthorized = status?.authorized;
   const settings = status?.settings || {};
 
-  // Multi-Pipeline State with instant localStorage cache fallback
+  const userId = status?.account?.id || "";
+  const userStorageKey = userId ? `cached_routing_pipelines_${userId}` : "cached_routing_pipelines";
+
+  // Multi-Pipeline State with user-scoped localStorage cache fallback
   const [pipelines, setPipelines] = useState(() => {
+    if (Array.isArray(status?.settings?.routing_pipelines) && status.settings.routing_pipelines.length > 0) {
+      return status.settings.routing_pipelines;
+    }
     try {
-      const cached = localStorage.getItem("cached_routing_pipelines");
+      const cached = localStorage.getItem(userStorageKey);
       if (cached) {
         const parsed = JSON.parse(cached);
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
       }
     } catch (e) {}
-    if (Array.isArray(status?.settings?.routing_pipelines) && status.settings.routing_pipelines.length > 0) {
-      return status.settings.routing_pipelines;
-    }
     return [createInitialPipeline(status?.settings || {})];
   });
   const [activePipelineIndex, setActivePipelineIndex] = useState(0);
 
-  // Sync pipelines whenever backend status updates with valid pipelines
+  // Sync pipelines whenever backend status updates or user changes
   useEffect(() => {
     if (Array.isArray(status?.settings?.routing_pipelines) && status.settings.routing_pipelines.length > 0) {
       const normalized = status.settings.routing_pipelines.map((p, idx) => ({
@@ -160,16 +163,21 @@ export default function StudioTab({
       }));
       setPipelines(normalized);
       try {
-        localStorage.setItem("cached_routing_pipelines", JSON.stringify(normalized));
+        localStorage.setItem(userStorageKey, JSON.stringify(normalized));
       } catch (e) {}
+    } else if (status?.settings) {
+      // User has no custom pipelines or switched to fresh user: reset to user's initial pipeline
+      const freshInitial = [createInitialPipeline(status?.settings || {})];
+      setPipelines(freshInitial);
+      setActivePipelineIndex(0);
     }
-  }, [JSON.stringify(status?.settings?.routing_pipelines)]);
+  }, [userId, JSON.stringify(status?.settings?.routing_pipelines)]);
 
-  // Save to localStorage whenever pipelines change
+  // Save to localStorage whenever pipelines change (strictly scoped to user)
   const persistPipelines = (newList) => {
     setPipelines(newList);
     try {
-      localStorage.setItem("cached_routing_pipelines", JSON.stringify(newList));
+      localStorage.setItem(userStorageKey, JSON.stringify(newList));
     } catch (e) {}
   };
 
