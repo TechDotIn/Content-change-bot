@@ -24,7 +24,8 @@ from supabase_client import (
     save_sync_log_to_db,
     get_user_profile_from_db,
     update_user_profile_in_db,
-    get_all_users_with_telegram_sessions
+    get_all_users_with_telegram_sessions,
+    get_cached_user_subscription
 )
 
 # App Environment Suffix for local vs production session isolation
@@ -645,6 +646,22 @@ class MultiUserTelegramManager:
 
             if not settings.get("enabled", True):
                 return
+
+            # --- Subscription Gate ---
+            # Block message forwarding if the user does not have an active paid subscription.
+            if IS_SUPABASE_CONFIGURED:
+                try:
+                    sub = get_cached_user_subscription(user_id)
+                    sub_status = sub.get("status", "")
+                    plan_id = str(sub.get("plan_id", "free")).lower()
+                    is_paid_active = (sub_status == "active" and plan_id not in ("free", "", "none"))
+                    if not is_paid_active:
+                        print(f"🔒 [SUBSCRIPTION_GATE] User {user_id[:8]} has no active paid plan (plan={plan_id}, status={sub_status}). Message forwarding blocked.")
+                        return
+                except Exception as sub_err:
+                    print(f"⚠️ [SUBSCRIPTION_GATE] Could not verify subscription for {user_id[:8]}: {sub_err}. Blocking forwarding as a safety measure.")
+                    return
+            # --- End Subscription Gate ---
 
             try:
                 chat_name = getattr(event.chat, "title", None) or getattr(event.chat, "first_name", "Chat")

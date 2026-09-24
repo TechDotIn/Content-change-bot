@@ -34,6 +34,60 @@ const cleanDisplayMessage = (msgText) => {
   return msgText;
 };
 
+// Returns icon + label for a media type string
+const MEDIA_META = {
+  photo:    { icon: "fa-solid fa-image",       label: "Photo",    color: "#38bdf8" },
+  video:    { icon: "fa-solid fa-video",       label: "Video",    color: "#a78bfa" },
+  gif:      { icon: "fa-solid fa-film",        label: "GIF",      color: "#fb923c" },
+  sticker:  { icon: "fa-solid fa-star",        label: "Sticker",  color: "#facc15" },
+  document: { icon: "fa-solid fa-file",        label: "Document", color: "#94a3b8" },
+  media:    { icon: "fa-solid fa-paperclip",   label: "Media",    color: "#94a3b8" },
+};
+
+const MediaBadge = ({ mediaType, hasMedia }) => {
+  if (!hasMedia && !mediaType) return null;
+  const key = (mediaType || "media").toLowerCase();
+  const meta = MEDIA_META[key] || MEDIA_META["media"];
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: "4px",
+      background: `${meta.color}18`, border: `1px solid ${meta.color}55`,
+      color: meta.color, borderRadius: "5px",
+      padding: "2px 7px", fontSize: "10px", fontWeight: "700",
+      marginBottom: "6px"
+    }}>
+      <i className={meta.icon} style={{ fontSize: "9px" }}></i> {meta.label}
+    </span>
+  );
+};
+
+const ReplyBlock = ({ isReply, replyText, replySender }) => {
+  if (!isReply) return null;
+  const snippet = (replyText || "").trim().slice(0, 120);
+  return (
+    <div style={{
+      borderLeft: "2px solid rgba(99,102,241,0.7)",
+      background: "rgba(99,102,241,0.07)",
+      borderRadius: "0 6px 6px 0",
+      padding: "4px 8px",
+      marginBottom: "6px",
+      fontSize: "11px",
+      color: "var(--text-muted)",
+      lineHeight: "1.4"
+    }}>
+      <span style={{ color: "#818cf8", fontWeight: "700", fontSize: "10px" }}>
+        <i className="fa-solid fa-reply" style={{ marginRight: "4px", fontSize: "9px" }}></i>
+        {replySender ? `↪ ${replySender}` : "↪ Reply"}
+      </span>
+      {snippet ? (
+        <div style={{ marginTop: "2px", fontStyle: snippet.startsWith("[") ? "italic" : "normal", opacity: 0.85 }}>
+          {snippet}{(replyText || "").length > 120 ? "…" : ""}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
 const createInitialPipeline = (settings = {}) => ({
   id: "pipe_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
   name: "Channel Rule 1",
@@ -810,8 +864,11 @@ export default function StudioTab({
                       <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>{formatLocalDate(m.date)}</span>
                     </div>
 
-                    <div className="msg-body" style={{ fontSize: "13px", fontWeight: "600", color: "#ffffff", margin: "8px 0", lineHeight: "1.4" }}>
-                      {m.raw_message}
+                    <ReplyBlock isReply={m.is_reply} replyText={m.reply_text} replySender={m.reply_sender} />
+                    <MediaBadge hasMedia={m.has_media} mediaType={m.media_type} />
+
+                    <div className="msg-body" style={{ fontSize: "13px", fontWeight: "600", color: "#ffffff", margin: "4px 0", lineHeight: "1.4", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                      {m.raw_message || (!m.has_media ? <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>No text</span> : null)}
                     </div>
 
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "10px", paddingTop: "8px", borderTop: "1px solid rgba(255, 255, 255, 0.05)" }}>
@@ -1110,40 +1167,6 @@ export default function StudioTab({
           </div>
 
           <div className="studio-col-body" style={{ padding: "14px", display: "flex", flexDirection: "column", gap: "12px" }}>
-            {/* 🧪 Real-time Interactive Test Transformation Box */}
-            <div style={{
-              background: "rgba(16, 185, 129, 0.08)",
-              border: "1px solid rgba(16, 185, 129, 0.3)",
-              borderRadius: "10px",
-              padding: "12px"
-            }}>
-              <h4 style={{ fontSize: "12px", fontWeight: "700", color: "#6ee7b7", marginBottom: "6px", display: "flex", alignItems: "center", gap: "6px" }}>
-                <i className="fa-solid fa-vial"></i> Live Rule Tester ({activePipe.name})
-              </h4>
-              <textarea
-                className="form-control"
-                rows={2}
-                style={{ fontSize: "12px", marginBottom: "8px", background: "rgba(0,0,0,0.4)" }}
-                placeholder="Type sample message here..."
-                value={testInput}
-                onChange={(e) => setTestInput(e.target.value)}
-              />
-              <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>Output Result:</div>
-              <div style={{
-                background: "rgba(0, 0, 0, 0.6)",
-                border: "1px solid rgba(255, 255, 255, 0.1)",
-                borderRadius: "6px",
-                padding: "8px 10px",
-                fontSize: "12px",
-                fontWeight: "600",
-                color: "#ffffff",
-                minHeight: "36px",
-                wordBreak: "break-word"
-              }}>
-                {testOutput || <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>No output</span>}
-              </div>
-            </div>
-
             {/* Destination Stream Messages */}
             <div style={{ flex: 1, minHeight: "260px" }}>
               <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--text-muted)", marginBottom: "8px", textTransform: "uppercase" }}>
@@ -1173,8 +1196,10 @@ export default function StudioTab({
                         </strong>
                         <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>{formatLocalDate(m.date)}</span>
                       </div>
-                      <div className="msg-body" style={{ fontSize: "12px", fontWeight: "600", color: "#ffffff", margin: "6px 0", lineHeight: "1.3" }}>
-                        {cleanDisplayMessage(m.transformed_message || m.raw_message)}
+                      <ReplyBlock isReply={m.is_reply} replyText={m.reply_text} replySender={m.reply_sender} />
+                      <MediaBadge hasMedia={m.has_media} mediaType={m.media_type} />
+                      <div className="msg-body" style={{ fontSize: "12px", fontWeight: "600", color: "#ffffff", margin: "4px 0", lineHeight: "1.3", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                        {cleanDisplayMessage(m.transformed_message || m.raw_message) || (!m.has_media ? <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>No text</span> : null)}
                       </div>
                     </div>
                   ))}
