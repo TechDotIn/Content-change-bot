@@ -32,8 +32,8 @@ export default function LoginPage({ onLoginSuccess }) {
           console.info("[AUTH] Session initialized. Access token stored.");
           setAlert({ type: "success", msg: "Authentication successful! Redirecting..." });
           setTimeout(() => {
-            onLoginSuccess();
-          }, 500);
+            onLoginSuccess(sbData.session);
+          }, 300);
           return;
         }
 
@@ -47,16 +47,24 @@ export default function LoginPage({ onLoginSuccess }) {
 
         if (res.ok && data.success && data.access_token) {
           localStorage.setItem("sb_access_token", data.access_token);
+          let currentSession = null;
           if (data.refresh_token) {
-            await supabase.auth.setSession({
-              access_token: data.access_token,
-              refresh_token: data.refresh_token
-            }).catch(() => {});
+            try {
+              const { data: sData } = await supabase.auth.setSession({
+                access_token: data.access_token,
+                refresh_token: data.refresh_token
+              });
+              currentSession = sData?.session;
+            } catch (e) {}
+          }
+          if (!currentSession) {
+            const { data: sData } = await supabase.auth.getSession().catch(() => ({ data: null }));
+            currentSession = sData?.session;
           }
           setAlert({ type: "success", msg: data.message || "Authentication successful! Redirecting..." });
           setTimeout(() => {
-            onLoginSuccess();
-          }, 500);
+            onLoginSuccess(currentSession);
+          }, 300);
         } else {
           setAlert({ type: "error", msg: data.detail || sbError?.message || "Authentication failed." });
         }
