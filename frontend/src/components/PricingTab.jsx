@@ -17,18 +17,43 @@ export default function PricingTab({ status, onRefresh, showToast, setActiveTab 
     console.info(`[PAYMENT] Requested plan: ${planId}`);
 
     try {
-      // 1. Create fresh order from backend
-      const orderRes = await authFetch("/api/subscription/create-order", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan_id: planId })
-      });
-      const orderData = await orderRes.json();
-      console.info("[PAYMENT] Order create response:", orderData);
+      // 1. Primary: Use Cloud Edge Function (supports all plans 599, 799, 1499 & rzp.io links)
+      let orderData = null;
+      const sbUrl = import.meta.env.VITE_SUPABASE_URL || "https://qhelyctgtdkwrxkgkufr.supabase.co";
+      const sbAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFoZWx5Y3RndGRrd3J4a2drdWZyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ1NTAxNDksImV4cCI6MjExMDEyNjE0OX0.mM2hly38J3TVHxH5wlekYoAP4EIRbZDB1WYXhJaHkr8";
 
-      if (!orderRes.ok || !orderData.success || !orderData.order_id) {
+      try {
+        const edgeRes = await fetch(`${sbUrl}/functions/v1/create-razorpay-order`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "apikey": sbAnonKey,
+            "Authorization": `Bearer ${sbAnonKey}`
+          },
+          body: JSON.stringify({ plan_id: planId })
+        });
+        if (edgeRes.ok) {
+          orderData = await edgeRes.json();
+          console.info("[PAYMENT] Edge function order created:", orderData);
+        }
+      } catch (edgeErr) {
+        console.warn("[PAYMENT] Edge function notice, trying backend fallback:", edgeErr);
+      }
+
+      // Secondary fallback: Backend API route
+      if (!orderData || !orderData.success) {
+        const orderRes = await authFetch("/api/subscription/create-order", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ plan_id: planId })
+        });
+        orderData = await orderRes.json();
+        console.info("[PAYMENT] Backend order create response:", orderData);
+      }
+
+      if (!orderData || !orderData.success || !orderData.order_id) {
         console.error("[PAYMENT] Error response:", orderData);
-        notify("Payment Order Error: " + (orderData.detail || "Could not initialize payment order."), "error");
+        notify("Payment Order Error: " + (orderData?.detail || orderData?.error || "Could not initialize payment order."), "error");
         setLoadingPlan(null);
         return;
       }

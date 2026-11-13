@@ -4,12 +4,13 @@ const corsHeaders = {
 };
 
 interface CreateOrderRequest {
-  plan_id: "plan_599" | "plan_799";
+  plan_id: "plan_599" | "plan_799" | "plan_1499";
 }
 
 const PLAN_PRICES: Record<string, { amount: number; name: string }> = {
   plan_599: { amount: 59900, name: "Basic Plan (₹599)" },
   plan_799: { amount: 79900, name: "Pro Plan (₹799)" },
+  plan_1499: { amount: 149900, name: "AI Translation & Multi-Channel Plan (₹1499)" },
 };
 
 Deno.serve(async (req: Request) => {
@@ -33,7 +34,7 @@ Deno.serve(async (req: Request) => {
 
     if (!plan_id || !PLAN_PRICES[plan_id]) {
       return new Response(
-        JSON.stringify({ error: "Invalid plan_id specified. Choose 'plan_599' or 'plan_799'." }),
+        JSON.stringify({ error: "Invalid plan_id specified. Choose 'plan_599', 'plan_799', or 'plan_1499'." }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }

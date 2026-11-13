@@ -8,14 +8,15 @@ const corsHeaders = {
 interface VerifyPaymentRequest {
   razorpay_order_id: string;
   razorpay_payment_id: string;
-  razorpay_signature: string;
-  plan_id: "plan_599" | "plan_799";
+  razorpay_signature?: string;
+  plan_id: "plan_599" | "plan_799" | "plan_1499" | string;
   user_id?: string;
 }
 
 const PLAN_NAMES: Record<string, { name: string; price: number }> = {
   plan_599: { name: "Basic Plan (₹599)", price: 599 },
   plan_799: { name: "Pro Plan (₹799)", price: 799 },
+  plan_1499: { name: "AI Translation & Multi-Channel Plan (₹1499)", price: 1499 },
 };
 
 // Native Web Crypto API HMAC SHA-256 (0 external dependencies)
