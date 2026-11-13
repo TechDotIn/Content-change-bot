@@ -47,23 +47,20 @@ export default function LoginPage({ onLoginSuccess }) {
 
         if (res.ok && data.success && data.access_token) {
           localStorage.setItem("sb_access_token", data.access_token);
-          let currentSession = null;
           if (data.refresh_token) {
-            try {
-              const { data: sData } = await supabase.auth.setSession({
-                access_token: data.access_token,
-                refresh_token: data.refresh_token
-              });
-              currentSession = sData?.session;
-            } catch (e) {}
+            supabase.auth.setSession({
+              access_token: data.access_token,
+              refresh_token: data.refresh_token
+            }).catch(() => {});
           }
-          if (!currentSession) {
-            const { data: sData } = await supabase.auth.getSession().catch(() => ({ data: null }));
-            currentSession = sData?.session;
-          }
+
           setAlert({ type: "success", msg: data.message || "Authentication successful! Redirecting..." });
+          const userSession = {
+            access_token: data.access_token,
+            user: data.user || { email: email.trim() }
+          };
           setTimeout(() => {
-            onLoginSuccess(currentSession);
+            onLoginSuccess(userSession);
           }, 300);
         } else {
           setAlert({ type: "error", msg: data.detail || sbError?.message || "Authentication failed." });

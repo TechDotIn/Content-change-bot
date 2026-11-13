@@ -12,9 +12,13 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     telegram_phone TEXT DEFAULT NULL,
     telegram_first_name TEXT DEFAULT NULL,
     telegram_username TEXT DEFAULT NULL,
+    telegram_user_id TEXT DEFAULT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
+
+-- Migration Helper: Add telegram_user_id to existing profiles table if not present
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS telegram_user_id TEXT DEFAULT NULL;
 
 -- 2. Create User Settings Table (Per-user channel routing, webhooks, & transformation rules)
 CREATE TABLE IF NOT EXISTS public.user_settings (
@@ -32,16 +36,28 @@ CREATE TABLE IF NOT EXISTS public.user_settings (
     override_all_links BOOLEAN DEFAULT false,
     custom_link_url TEXT DEFAULT '',
     remove_all_links BOOLEAN DEFAULT false,
+    override_media_image BOOLEAN DEFAULT false,
+    custom_image_url TEXT DEFAULT '',
+    strip_media_images BOOLEAN DEFAULT false,
     keyword_filter TEXT DEFAULT '',
     filter_mode TEXT DEFAULT 'all',
+    enable_translation BOOLEAN DEFAULT false,
+    target_language TEXT DEFAULT 'English',
+    source_language TEXT DEFAULT 'Auto-Detect',
     routing_pipelines JSONB DEFAULT '[]'::jsonb,
     enabled BOOLEAN DEFAULT true,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- Migration Helper: Add routing_pipelines to existing user_settings table if not present
+-- Migration Helpers: Add newer columns to existing user_settings table if not present
 ALTER TABLE public.user_settings ADD COLUMN IF NOT EXISTS routing_pipelines JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE public.user_settings ADD COLUMN IF NOT EXISTS override_media_image BOOLEAN DEFAULT false;
+ALTER TABLE public.user_settings ADD COLUMN IF NOT EXISTS custom_image_url TEXT DEFAULT '';
+ALTER TABLE public.user_settings ADD COLUMN IF NOT EXISTS strip_media_images BOOLEAN DEFAULT false;
+ALTER TABLE public.user_settings ADD COLUMN IF NOT EXISTS enable_translation BOOLEAN DEFAULT false;
+ALTER TABLE public.user_settings ADD COLUMN IF NOT EXISTS target_language TEXT DEFAULT 'English';
+ALTER TABLE public.user_settings ADD COLUMN IF NOT EXISTS source_language TEXT DEFAULT 'Auto-Detect';
 
 
 -- 3. Create Sync Logs Table (Per-user sync activity history)
@@ -179,4 +195,5 @@ CREATE TRIGGER on_auth_user_created
 CREATE INDEX IF NOT EXISTS idx_sync_logs_user_id ON public.sync_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_sync_logs_created_at ON public.sync_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_profiles_telegram_session ON public.profiles(telegram_session_string) WHERE telegram_session_string IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_profiles_telegram_user_id ON public.profiles(telegram_user_id) WHERE telegram_user_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user_id ON public.subscriptions(user_id);

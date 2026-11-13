@@ -5,6 +5,7 @@ from collections import deque
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Set
 import requests
+from fastapi import HTTPException
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import (
@@ -150,15 +151,19 @@ class CrossProcessUserLock:
 
     def acquire(self) -> bool:
         try:
-            self.fp = open(self.lock_path, "w")
+            self.fp = open(self.lock_path, "a+")
+            self.fp.seek(0)
             if sys.platform.startswith("win"):
                 import msvcrt
                 msvcrt.locking(self.fp.fileno(), msvcrt.LK_NBLCK, 1)
             else:
                 import fcntl
                 fcntl.flock(self.fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.fp.seek(0)
+            self.fp.truncate()
             self.fp.write(f"{WORKER_ID}\n")
             self.fp.flush()
+            self.fp.seek(0)
             return True
         except Exception:
             if self.fp:
@@ -172,6 +177,7 @@ class CrossProcessUserLock:
     def release(self):
         if self.fp:
             try:
+                self.fp.seek(0)
                 if sys.platform.startswith("win"):
                     import msvcrt
                     msvcrt.locking(self.fp.fileno(), msvcrt.LK_UNLCK, 1)
@@ -202,6 +208,7 @@ class MultiUserTelegramManager:
         self.last_connect_attempt: Dict[str, float] = {}
         self.health_cache: Dict[str, float] = {}
         self.session_ownership: Dict[str, dict] = {}
+        self.proc_locks: Dict[str, Any] = {}
 
     def _get_user_lock(self, user_id: str) -> asyncio.Lock:
         if user_id not in self._locks:
@@ -764,7 +771,10 @@ class MultiUserTelegramManager:
                         "custom_image_url": settings.get("custom_image_url", ""),
                         "strip_media_images": settings.get("strip_media_images", False),
                         "keyword_filter": settings.get("keyword_filter", ""),
-                        "filter_mode": settings.get("filter_mode", "all")
+                        "filter_mode": settings.get("filter_mode", "all"),
+                        "enable_translation": settings.get("enable_translation", False),
+                        "target_language": settings.get("target_language", "English"),
+                        "source_language": settings.get("source_language", "Auto-Detect")
                     }]
 
                 from main import apply_text_transformation, resolve_telegram_entity
@@ -782,7 +792,12 @@ class MultiUserTelegramManager:
                     if isinstance(pipeline.get("settings"), dict):
                         pipe_settings.update(pipeline["settings"])
 
-                    transformed_text, should_forward, reason = apply_text_transformation(raw_text, pipe_settings)
+                    # Tier Gate: AI translation strictly requires plan_1499
+                    if pipe_settings.get("enable_translation", False):
+                        if str(plan_id).lower() != "plan_1499":
+                            pipe_settings["enable_translation"] = False
+
+                    transformed_text, should_forward, reason = await apply_text_transformation(raw_text, pipe_settings)
 
                     log_item = {
                         "id": event.id,
@@ -1068,6 +1083,13 @@ class MultiUserTelegramManager:
                     "message": "Verification code sent to your Telegram app!",
                     "phone_code_hash": res.phone_code_hash
                 }
+            except HTTPException as http_exc:
+                if http_exc.status_code != 401 or "2FA" not in str(http_exc.detail):
+                    if client.is_connected():
+                        await client.disconnect()
+                    if user_id in self.pending_logins:
+                        del self.pending_logins[user_id]
+                raise
             except FloodWaitError as fwe:
                 if client.is_connected():
                     await client.disconnect()
@@ -1124,6 +1146,15 @@ class MultiUserTelegramManager:
                 if user_id in self.pending_logins:
                     del self.pending_logins[user_id]
 
+                # Evict any empty cached dialogs so fresh channels are fetched immediately
+                if hasattr(self, "user_dialogs_cache"):
+                    self.user_dialogs_cache.pop(user_id, None)
+
+                # Assign process ownership lock
+                proc_lock = CrossProcessUserLock(user_id)
+                if proc_lock.acquire():
+                    self.proc_locks[user_id] = proc_lock
+
                 print(f"✅ [TELEGRAM_CLIENT_CREATE] Auth successful for User: {user_id[:8]} ({me.first_name})")
                 return {
                     "success": True,
@@ -1139,6 +1170,13 @@ class MultiUserTelegramManager:
                 raise HTTPException(status_code=401, detail="2FA Password required")
             except PhoneCodeInvalidError:
                 raise HTTPException(status_code=400, detail="Invalid verification code entered.")
+            except HTTPException as http_exc:
+                if http_exc.status_code != 401 or "2FA" not in str(http_exc.detail):
+                    if client.is_connected():
+                        await client.disconnect()
+                    if user_id in self.pending_logins:
+                        del self.pending_logins[user_id]
+                raise
             except FloodWaitError as fwe:
                 raise HTTPException(status_code=429, detail=f"Telegram rate limit: Please wait {fwe.seconds} seconds.")
             except (AuthKeyDuplicatedError, AuthKeyUnregisteredError, UserDeactivatedError) as auth_err:

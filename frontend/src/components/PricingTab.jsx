@@ -173,6 +173,7 @@ export default function PricingTab({ status, onRefresh, showToast, setActiveTab 
             <li><i className="fa-solid fa-circle-check"></i> n8n Webhook Integration</li>
             <li><i className="fa-solid fa-circle-check"></i> 24/7 Automated Sync Loop</li>
             <li style={{ color: "var(--text-muted)", opacity: 0.5 }}><i className="fa-solid fa-circle-xmark"></i> Multiple Channel Rules</li>
+            <li style={{ color: "var(--text-muted)", opacity: 0.5 }}><i className="fa-solid fa-circle-xmark"></i> AI Language Translation</li>
           </ul>
 
           <button
@@ -191,8 +192,8 @@ export default function PricingTab({ status, onRefresh, showToast, setActiveTab 
         </div>
 
         {/* Pro Plan */}
-        <div className={`pricing-card popular`}>
-          <div className="pricing-badge">BEST VALUE</div>
+        <div className={`pricing-card ${currentPlan === "plan_799" ? "popular" : ""}`}>
+          <div className="pricing-badge" style={{ background: "var(--accent-purple)", color: "#fff" }}>MULTI-CHANNEL</div>
           <h3 style={{ fontSize: "20px", fontWeight: "700" }}>Pro Plan</h3>
           <div className="pricing-price">
             ₹799 <span>/ month</span>
@@ -208,7 +209,7 @@ export default function PricingTab({ status, onRefresh, showToast, setActiveTab 
             <li><i className="fa-solid fa-circle-check"></i> Advanced Link Overriding & Stripping</li>
             <li><i className="fa-solid fa-circle-check"></i> Bulk Keyword Filtering Rules</li>
             <li><i className="fa-solid fa-circle-check"></i> Priority Telegram Sync Engine</li>
-            <li><i className="fa-solid fa-circle-check"></i> VIP Support & Setup Guidance</li>
+            <li style={{ color: "var(--text-muted)", opacity: 0.5 }}><i className="fa-solid fa-circle-xmark"></i> AI Language Translation</li>
           </ul>
 
           <button
@@ -223,6 +224,45 @@ export default function PricingTab({ status, onRefresh, showToast, setActiveTab 
               <><i className="fa-solid fa-check-circle"></i> ✓ Current Active Plan</>
             ) : (
               <><i className="fa-solid fa-crown"></i> Subscribe Pro (₹799)</>
+            )}
+          </button>
+        </div>
+
+        {/* AI Translation Plan (₹1499) */}
+        <div className={`pricing-card popular`} style={{ borderColor: "var(--accent-green)", boxShadow: "0 0 35px rgba(16, 185, 129, 0.2)" }}>
+          <div className="pricing-badge" style={{ background: "var(--accent-green)", color: "#000", fontWeight: "800" }}>AI TRANSLATION</div>
+          <h3 style={{ fontSize: "20px", fontWeight: "700", display: "flex", alignItems: "center", gap: "8px" }}>
+            AI Plan <i className="fa-solid fa-wand-magic-sparkles" style={{ color: "var(--accent-green)", fontSize: "16px" }}></i>
+          </h3>
+          <div className="pricing-price">
+            ₹1,499 <span>/ month</span>
+          </div>
+          <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+            Real-time AI translation + unlimited multi-channel routing with financial jargon preservation.
+          </p>
+
+          <ul className="plan-features">
+            <li><i className="fa-solid fa-circle-check"></i> <strong>Everything in Pro Plan +</strong></li>
+            <li><i className="fa-solid fa-circle-check"></i> <strong>Real-Time AI Language Translation</strong></li>
+            <li><i className="fa-solid fa-circle-check"></i> 15+ Languages (Gujarati, Hindi, Tamil, Russian, etc.)</li>
+            <li><i className="fa-solid fa-circle-check"></i> Preserves Tickers, Strike Prices & Jargon</li>
+            <li><i className="fa-solid fa-circle-check"></i> URLs, Usernames & Emojis Kept Intact</li>
+            <li><i className="fa-solid fa-circle-check"></i> <strong>Unlimited Channel Routing Rules</strong></li>
+            <li><i className="fa-solid fa-circle-check"></i> VIP Priority Engine & Direct Support</li>
+          </ul>
+
+          <button
+            className={`btn ${currentPlan === "plan_1499" && isSubActive ? "btn-success" : "btn-primary"} w-100`}
+            style={{ background: currentPlan === "plan_1499" && isSubActive ? "" : "linear-gradient(135deg, #10b981 0%, #059669 100%)", color: "#fff", border: "none", fontWeight: "700" }}
+            disabled={currentPlan === "plan_1499" && isSubActive}
+            onClick={() => handleSubscribe("plan_1499")}
+          >
+            {loadingPlan === "plan_1499" ? (
+              <><i className="fa-solid fa-spinner fa-spin"></i> Initializing...</>
+            ) : currentPlan === "plan_1499" && isSubActive ? (
+              <><i className="fa-solid fa-check-circle"></i> ✓ Current Active Plan</>
+            ) : (
+              <><i className="fa-solid fa-wand-magic-sparkles"></i> Subscribe AI Plan (₹1499)</>
             )}
           </button>
         </div>

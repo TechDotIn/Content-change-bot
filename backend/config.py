@@ -2,7 +2,11 @@ import os
 import json
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables from .env file (guarantee backend/.env is found regardless of cwd)
+_backend_dir = os.path.dirname(os.path.abspath(__file__))
+_backend_env = os.path.join(_backend_dir, ".env")
+if os.path.exists(_backend_env):
+    load_dotenv(dotenv_path=_backend_env, override=True)
 load_dotenv()
 
 SETTINGS_FILE = "settings.json"
@@ -26,6 +30,9 @@ DEFAULT_SETTINGS = {
     "strip_media_images": False,
     "keyword_filter": "",
     "filter_mode": "all",  # "all" or "contains"
+    "enable_translation": False,
+    "target_language": "English",
+    "source_language": "Auto-Detect",
     "routing_pipelines": [],
     "enabled": True
 }
@@ -78,3 +85,8 @@ NOTIFICATION_BOT_TOKEN = os.getenv("NOTIFICATION_BOT_TOKEN", "").strip()
 NOTIFICATION_BOT_USERNAME = os.getenv("NOTIFICATION_BOT_USERNAME", "").strip()
 # App URL shown in renewal notifications
 APP_URL = os.getenv("APP_URL", "https://telegram.adshatke.site").strip()
+
+# AI Translation Engine (OpenAI & Gemini APIs)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+
