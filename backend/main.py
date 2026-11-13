@@ -138,10 +138,13 @@ class TestTransformRequest(BaseModel):
     remove_all_links: Optional[bool] = False
     keyword_filter: Optional[str] = ""
     filter_mode: Optional[str] = "all"
+    enable_translation: Optional[bool] = False
+    target_language: Optional[str] = "English"
+    source_language: Optional[str] = "Auto-Detect"
 
 
 class CreateRazorpayOrderRequest(BaseModel):
-    plan_id: str  # "plan_599" or "plan_799"
+    plan_id: str  # "plan_599", "plan_799", or "plan_1499"
 
 
 class VerifyRazorpayPaymentRequest(BaseModel):
@@ -160,7 +163,7 @@ def case_insensitive_replace(source_text: str, find_pattern: str, replacement_te
 
 
 # --- Text Transformation & Filtering Engine ---
-def apply_text_transformation(text: str, settings: dict) -> tuple[str, bool, str]:
+async def apply_text_transformation(text: str, settings: dict) -> tuple[str, bool, str]:
     if not text:
         text = ""
 
@@ -179,6 +182,18 @@ def apply_text_transformation(text: str, settings: dict) -> tuple[str, bool, str
             return text, False, f"Message contains blocked keyword from ({keyword_filter})"
 
     transformed = text
+
+    # AI Language Conversion (if enabled)
+    if settings.get("enable_translation", False):
+        try:
+            from translation_service import translate_text
+            target_lang = settings.get("target_language", "English")
+            source_lang = settings.get("source_language", "Auto-Detect")
+            trans_result, ok, msg = await translate_text(transformed, target_lang, source_lang)
+            if ok and trans_result:
+                transformed = trans_result
+        except Exception as trans_err:
+            print(f"⚠️ [TRANSLATION NOTICE] Translation fallback: {trans_err}. Using original text.")
 
     # Multi-rule replacement (Case-Insensitive)
     replacement_rules = settings.get("replacement_rules")
@@ -607,9 +622,12 @@ async def user_login(data: UserAuthRequest):
 async def get_user_me(current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
     profile = get_user_profile_from_db(user_id) if IS_SUPABASE_CONFIGURED else {}
+    # Zero-shortcut credential sanitization: Never leak MTProto session string to wire
+    safe_profile = {k: v for k, v in profile.items() if k != "telegram_session_string"}
+    safe_profile["has_telegram_session"] = bool(profile.get("telegram_session_string"))
     return {
         "user": current_user,
-        "profile": profile,
+        "profile": safe_profile,
         "supabase_configured": IS_SUPABASE_CONFIGURED
     }
 
@@ -669,7 +687,7 @@ async def get_status(current_user: dict = Depends(get_current_user)):
         "settings": settings,
         "subscription": subscription,
         "razorpay_key_id": RAZORPAY_KEY_ID,
-        "edge_function_url": SUPABASE_EDGE_FUNCTION_URL,
+        "edge_function_url": "",  # White-label: raw infra URLs withheld from wire
         "notification_bot_username": NOTIFICATION_BOT_USERNAME,
         "supabase_configured": IS_SUPABASE_CONFIGURED
     }
@@ -874,6 +892,29 @@ async def get_messages(
             source_setting = settings.get("source_channel_id", "all")
             dest_setting = settings.get("destination_channel_id", "")
 
+            # Resolve pipeline settings if matching routing_pipelines
+            active_transform_settings = settings.copy()
+            pipelines = [p for p in settings.get("routing_pipelines", []) if p.get("enabled", True)]
+            target_clean = str(target_channel).replace("-100", "").replace("-", "").strip()
+            for p in pipelines:
+                p_sources = p.get("source_channels") or p.get("source_channel_ids") or p.get("source_channel_id", "all")
+                if isinstance(p_sources, str):
+                    p_sources = [p_sources]
+                p_sources_clean = [str(s).replace("-100", "").replace("-", "").strip() for s in p_sources]
+                if "all" in p_sources or target_clean in p_sources_clean:
+                    active_transform_settings.update({k: v for k, v in p.items() if v is not None})
+                    if isinstance(p.get("settings"), dict):
+                        active_transform_settings.update(p["settings"])
+                    break
+
+            # Tier Gate: AI translation requires plan_1499
+            if active_transform_settings.get("enable_translation", False):
+                from supabase_client import get_cached_user_subscription
+                sub = get_cached_user_subscription(user_id) if IS_SUPABASE_CONFIGURED else {}
+                user_plan = str(sub.get("plan_id", "free")).lower()
+                if user_plan != "plan_1499":
+                    active_transform_settings["enable_translation"] = False
+
             is_source = (str(target_channel).strip() == "all") or is_same_channel(target_channel, source_setting) or is_same_channel(getattr(entity, "id", None), source_setting)
             is_dest = is_same_channel(target_channel, dest_setting) or is_same_channel(getattr(entity, "id", None), dest_setting)
 
@@ -887,7 +928,7 @@ async def get_messages(
                     should_forward = True
                     reason = "Destination message"
                 else:
-                    transformed_text, should_forward, reason = apply_text_transformation(raw_text, settings)
+                    transformed_text, should_forward, reason = await apply_text_transformation(raw_text, active_transform_settings)
 
                 has_media = bool(msg.media)
                 media_type = "photo" if getattr(msg, "photo", None) else ("video" if getattr(msg, "video", None) else ("document" if getattr(msg, "document", None) else ("media" if msg.media else None)))
@@ -1032,9 +1073,40 @@ async def send_manual_message(data: SendMessageRequest, current_user: dict = Dep
 
 
 @app.post("/api/test-transform")
-async def test_transform_endpoint(data: TestTransformRequest):
+async def test_transform_endpoint(data: TestTransformRequest, request: Request):
     settings = data.model_dump()
-    transformed, should_forward, reason = apply_text_transformation(data.sample_text, settings)
+
+    # Tier Gate: AI translation requires plan_1499
+    if settings.get("enable_translation", False):
+        user_id = None
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            try:
+                import jwt
+                from config import SUPABASE_JWT_SECRET
+                token = auth_header.split(" ")[1]
+                payload = jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=["HS256"], audience="authenticated")
+                user_id = payload.get("sub")
+            except Exception:
+                pass
+
+        if user_id and IS_SUPABASE_CONFIGURED:
+            from supabase_client import get_cached_user_subscription
+            sub = get_cached_user_subscription(user_id)
+            user_plan = str(sub.get("plan_id", "free")).lower()
+            if user_plan != "plan_1499":
+                settings["enable_translation"] = False
+                transformed, should_forward, reason = await apply_text_transformation(data.sample_text, settings)
+                return {
+                    "raw_text": data.sample_text,
+                    "transformed_text": transformed,
+                    "should_forward": should_forward,
+                    "reason": "AI Translation is locked (Requires AI Translation Plan ₹1499)",
+                    "plan_locked": True,
+                    "required_plan": "plan_1499"
+                }
+
+    transformed, should_forward, reason = await apply_text_transformation(data.sample_text, settings)
     return {
         "raw_text": data.sample_text,
         "transformed_text": transformed,
@@ -1045,7 +1117,8 @@ async def test_transform_endpoint(data: TestTransformRequest):
 
 PLAN_DETAILS = {
     "plan_599": {"amount": 59900, "price": 599, "name": "Basic Plan (₹599)"},
-    "plan_799": {"amount": 79900, "price": 799, "name": "Pro Plan (₹799)"}
+    "plan_799": {"amount": 79900, "price": 799, "name": "Pro Plan (₹799)"},
+    "plan_1499": {"amount": 149900, "price": 1499, "name": "AI Translation & Multi-Channel Plan (₹1499)"}
 }
 
 
@@ -1056,7 +1129,7 @@ async def create_subscription_order(
 ):
     plan_id = data.plan_id.lower().strip()
     if plan_id not in PLAN_DETAILS:
-        raise HTTPException(status_code=400, detail="Invalid plan selected. Choose 'plan_599' or 'plan_799'.")
+        raise HTTPException(status_code=400, detail="Invalid plan selected. Choose 'plan_599', 'plan_799', or 'plan_1499'.")
 
     if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
         raise HTTPException(status_code=500, detail="Razorpay payment keys are not configured on server.")

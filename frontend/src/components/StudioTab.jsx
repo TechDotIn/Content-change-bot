@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { authFetch } from "../api";
 
 const formatLocalDate = (dateStr) => {
   if (!dateStr) return "";
@@ -111,7 +112,10 @@ const createInitialPipeline = (settings = {}) => ({
   custom_image_url: settings.custom_image_url || "",
   strip_media_images: settings.strip_media_images ?? false,
   keyword_filter: settings.keyword_filter || "",
-  filter_mode: settings.filter_mode || "all"
+  filter_mode: settings.filter_mode || "all",
+  enable_translation: settings.enable_translation ?? false,
+  target_language: settings.target_language || "English",
+  source_language: settings.source_language || "Auto-Detect"
 });
 
 export default function StudioTab({
@@ -189,9 +193,10 @@ export default function StudioTab({
   // Plan-based pipeline limits (must come after currentPipelines is defined)
   const isSubActive = status?.subscription?.status === "active";
   const currentPlan = isSubActive ? (status?.subscription?.plan_id || "free") : "free";
-  const isPro = currentPlan === "plan_799";
+  const isAIPlan = currentPlan === "plan_1499";
+  const isPro = currentPlan === "plan_799" || isAIPlan;
   const isBasic = currentPlan === "plan_599";
-  // Basic (599): max 1 channel rule. Pro (799): unlimited.
+  // Basic (599): max 1 channel rule. Pro (799) & AI (1499): unlimited.
   const maxPipelines = isPro ? Infinity : isBasic ? 1 : 1;
   const canAddPipeline = currentPipelines.length < maxPipelines;
 
@@ -334,6 +339,8 @@ export default function StudioTab({
   // Sample test transformation state
   const [testInput, setTestInput] = useState("Check out our telegram update: contact info@oldbrand.com or @oldbrand at https://t.me/oldbrand");
   const [testOutput, setTestOutput] = useState("");
+  const [isTestingTransform, setIsTestingTransform] = useState(false);
+  const [testTransformStatus, setTestTransformStatus] = useState("");
 
   const runLocalTransform = (text, pipe) => {
     if (!text) return "";
@@ -384,9 +391,83 @@ export default function StudioTab({
     return res.trim();
   };
 
+  const handleTestTransform = async (customText = null) => {
+    const textToTest = customText !== null ? customText : testInput;
+    if (!textToTest || !textToTest.trim()) {
+      setTestOutput("");
+      setTestTransformStatus("");
+      return;
+    }
+
+    // If translation is not enabled, local regex transformation is instant
+    if (!activePipe.enable_translation) {
+      setTestOutput(runLocalTransform(textToTest, activePipe));
+      setTestTransformStatus("Local transform applied");
+      return;
+    }
+
+    setIsTestingTransform(true);
+    setTestTransformStatus("Translating via AI...");
+    try {
+      const payload = {
+        sample_text: textToTest,
+        text_prefix: activePipe.text_prefix || "",
+        text_suffix: activePipe.text_suffix || "",
+        find_text: activePipe.find_text || "",
+        replace_text: activePipe.replace_text || "",
+        replacement_rules: activePipe.replacement_rules || [],
+        override_all_links: Boolean(activePipe.override_all_links),
+        custom_link_url: activePipe.custom_link_url || "",
+        remove_all_links: Boolean(activePipe.remove_all_links),
+        keyword_filter: activePipe.keyword_filter || "",
+        filter_mode: activePipe.filter_mode || "all",
+        enable_translation: Boolean(activePipe.enable_translation),
+        target_language: activePipe.target_language || "Gujarati",
+        source_language: activePipe.source_language || "Auto-Detect"
+      };
+
+      const res = await authFetch("/api/test-transform", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setTestOutput(data.transformed_text || "");
+        setTestTransformStatus(`Translated to ${activePipe.target_language || "target"} successfully`);
+      } else {
+        setTestOutput(runLocalTransform(textToTest, activePipe));
+        setTestTransformStatus("Local fallback");
+      }
+    } catch (e) {
+      setTestOutput(runLocalTransform(textToTest, activePipe));
+      setTestTransformStatus("Local fallback");
+    } finally {
+      setIsTestingTransform(false);
+    }
+  };
+
   useEffect(() => {
-    setTestOutput(runLocalTransform(testInput, activePipe));
-  }, [testInput, activePipe]);
+    const timer = setTimeout(() => {
+      handleTestTransform();
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [
+    testInput,
+    activePipe.enable_translation,
+    activePipe.target_language,
+    activePipe.source_language,
+    activePipe.find_text,
+    activePipe.replace_text,
+    activePipe.text_prefix,
+    activePipe.text_suffix,
+    activePipe.override_all_links,
+    activePipe.remove_all_links,
+    activePipe.keyword_filter,
+    activePipe.filter_mode,
+    activePipe.replacement_rules
+  ]);
 
   return (
     <section className="tab-content active" id="tab-studio">
@@ -972,6 +1053,109 @@ export default function StudioTab({
               </div>
             </div>
 
+            {/* AI Language Converter (Gated to plan_1499) */}
+            <div className="modifier-section" style={{
+              background: isAIPlan ? "rgba(0, 0, 0, 0.3)" : "rgba(16, 185, 129, 0.04)",
+              border: isAIPlan ? "1px solid var(--border-color)" : "1px dashed rgba(16, 185, 129, 0.35)",
+              borderRadius: "10px",
+              padding: "12px",
+              position: "relative"
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                <h4 style={{ fontSize: "12px", fontWeight: "600", color: "#ffffff", margin: 0, display: "flex", alignItems: "center", gap: "8px" }}>
+                  <i className="fa-solid fa-language text-blue"></i> AI Language Converter
+                  {!isAIPlan && (
+                    <span className="badge" style={{ background: "rgba(239, 68, 68, 0.2)", color: "#ef4444", fontSize: "10px", padding: "2px 6px" }}>
+                      <i className="fa-solid fa-lock"></i> Requires AI Plan (₹1499)
+                    </span>
+                  )}
+                </h4>
+                {isAIPlan ? (
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "var(--text-muted)", cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={activePipe.enable_translation ?? false}
+                      onChange={(e) => updateActivePipe({ enable_translation: e.target.checked })}
+                    />
+                    Enable Translation
+                  </label>
+                ) : (
+                  <button
+                    className="btn btn-outline btn-sm"
+                    style={{ fontSize: "10px", padding: "2px 8px", color: "var(--accent-green)", borderColor: "var(--accent-green)" }}
+                    onClick={() => {
+                      const pricingNav = document.querySelector('[data-tab="tab-pricing"]');
+                      if (pricingNav) pricingNav.click();
+                      else alert("Upgrade to the AI Translation Plan (₹1,499/month) to unlock real-time language conversion!");
+                    }}
+                  >
+                    Upgrade ↗
+                  </button>
+                )}
+              </div>
+              {!isAIPlan ? (
+                <div style={{ background: "rgba(0, 0, 0, 0.35)", borderRadius: "6px", padding: "8px 10px", marginBottom: "8px", fontSize: "11px", color: "var(--text-muted)", lineHeight: "1.4" }}>
+                  <i className="fa-solid fa-circle-info" style={{ color: "var(--accent-green)", marginRight: "6px" }}></i>
+                  Real-time AI translation is locked on your current plan. Upgrade to the <strong>AI Translation Plan (₹1499/mo)</strong> to unlock automated conversion into Gujarati, Hindi, and 15+ languages.
+                </div>
+              ) : (
+                <p style={{ fontSize: "10px", color: "var(--text-muted)", marginBottom: "8px" }}>
+                  Converts content language while preserving emojis, links, @usernames, and formatting
+                </p>
+              )}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                <div>
+                  <label style={{ fontSize: "11px", color: "var(--text-muted)", display: "block", marginBottom: "4px" }}>Source Language</label>
+                  <select
+                    className="form-select"
+                    disabled={!activePipe.enable_translation}
+                    value={activePipe.source_language || "Auto-Detect"}
+                    onChange={(e) => updateActivePipe({ source_language: e.target.value })}
+                  >
+                    <option value="Auto-Detect">Auto-Detect</option>
+                    <option value="English">English</option>
+                    <option value="Hindi">Hindi (हिंदी)</option>
+                    <option value="Russian">Russian (Русский)</option>
+                    <option value="Spanish">Spanish (Español)</option>
+                    <option value="Arabic">Arabic (العربية)</option>
+                    <option value="French">French (Français)</option>
+                    <option value="German">German (Deutsch)</option>
+                    <option value="Chinese">Chinese (中文)</option>
+                    <option value="Bengali">Bengali (বাংলা)</option>
+                    <option value="Marathi">Marathi (मराठी)</option>
+                    <option value="Tamil">Tamil (தமிழ்)</option>
+                    <option value="Telugu">Telugu (తెలుగు)</option>
+                    <option value="Gujarati">Gujarati (ગુજરાતી)</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: "11px", color: "var(--text-muted)", display: "block", marginBottom: "4px" }}>Target Language</label>
+                  <select
+                    className="form-select"
+                    disabled={!activePipe.enable_translation}
+                    value={activePipe.target_language || "English"}
+                    onChange={(e) => updateActivePipe({ target_language: e.target.value })}
+                  >
+                    <option value="English">English</option>
+                    <option value="Hindi">Hindi (हिंदी)</option>
+                    <option value="Russian">Russian (Русский)</option>
+                    <option value="Spanish">Spanish (Español)</option>
+                    <option value="Arabic">Arabic (العربية)</option>
+                    <option value="French">French (Français)</option>
+                    <option value="German">German (Deutsch)</option>
+                    <option value="Chinese">Chinese (中文)</option>
+                    <option value="Portuguese">Portuguese (Português)</option>
+                    <option value="Japanese">Japanese (日本語)</option>
+                    <option value="Bengali">Bengali (বাংলা)</option>
+                    <option value="Marathi">Marathi (मराठी)</option>
+                    <option value="Tamil">Tamil (தமிழ்)</option>
+                    <option value="Telugu">Telugu (తెలుగు)</option>
+                    <option value="Gujarati">Gujarati (ગુજરાતી)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
             {/* Multiple Find & Replace Rules (Emails, Usernames, URLs, Text) */}
             <div className="modifier-section" style={{ background: "rgba(0, 0, 0, 0.3)", border: "1px solid var(--border-color)", borderRadius: "10px", padding: "12px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
@@ -1213,6 +1397,69 @@ export default function StudioTab({
                   ))}
                 </div>
               )}
+            </div>
+
+            {/* Interactive Live Rule & Translation Tester */}
+            <div style={{ marginTop: "12px", padding: "12px", background: "rgba(15, 23, 42, 0.7)", border: "1px solid var(--border-color)", borderRadius: "10px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                <span style={{ fontSize: "11px", fontWeight: "700", color: "var(--accent-purple)", textTransform: "uppercase", display: "flex", alignItems: "center", gap: "6px" }}>
+                  <i className="fa-solid fa-flask"></i> Interactive Rule & Translation Tester
+                </span>
+                {activePipe.enable_translation && isAIPlan ? (
+                  <span className="badge" style={{ background: "rgba(16, 185, 129, 0.2)", color: "var(--accent-green)", fontSize: "10px", padding: "2px 8px" }}>
+                    <i className="fa-solid fa-language"></i> {activePipe.target_language || "Gujarati"} Translation
+                  </span>
+                ) : activePipe.enable_translation && !isAIPlan ? (
+                  <span className="badge" style={{ background: "rgba(239, 68, 68, 0.2)", color: "#ef4444", fontSize: "10px", padding: "2px 8px" }}>
+                    <i className="fa-solid fa-lock"></i> Requires AI Plan (₹1499)
+                  </span>
+                ) : null}
+              </div>
+              <textarea
+                className="form-control"
+                rows={2}
+                placeholder="Type sample text to test rules & translation..."
+                value={testInput}
+                onChange={(e) => setTestInput(e.target.value)}
+                style={{ fontSize: "12px", marginBottom: "8px", resize: "vertical" }}
+              />
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={() => handleTestTransform()}
+                  disabled={isTestingTransform}
+                  style={{ fontSize: "11px", padding: "3px 10px" }}
+                >
+                  {isTestingTransform ? (
+                    <><i className="fa-solid fa-spinner fa-spin"></i> Translating...</>
+                  ) : (
+                    <><i className="fa-solid fa-play"></i> Test Transform</>
+                  )}
+                </button>
+                {testTransformStatus && (
+                  <span style={{ fontSize: "10px", color: "var(--text-muted)", fontStyle: "italic" }}>
+                    {testTransformStatus}
+                  </span>
+                )}
+              </div>
+              <div style={{ fontSize: "10px", fontWeight: "700", color: "var(--text-muted)", marginBottom: "4px", textTransform: "uppercase" }}>
+                Result:
+              </div>
+              <div style={{
+                background: "rgba(0, 0, 0, 0.35)",
+                border: "1px solid rgba(255, 255, 255, 0.1)",
+                borderRadius: "6px",
+                padding: "8px 10px",
+                fontSize: "12px",
+                minHeight: "42px",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                color: testOutput ? "#38bdf8" : "var(--text-muted)",
+                fontWeight: "500"
+              }}>
+                {testOutput || <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>Transformed output appears here...</span>}
+              </div>
             </div>
           </div>
         </div>

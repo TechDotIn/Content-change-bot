@@ -71,29 +71,44 @@ export default function App() {
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
       const s = data.session;
-      setSession(s);
-      if (s?.access_token) {
-        localStorage.setItem("sb_access_token", s.access_token);
-        console.info("[AUTH] Session restored.");
+      if (s) {
+        setSession(s);
+        if (s?.access_token) {
+          localStorage.setItem("sb_access_token", s.access_token);
+          console.info("[AUTH] Session restored from Supabase.");
+        }
+      } else {
+        const localToken = localStorage.getItem("sb_access_token");
+        if (localToken) {
+          setSession({ access_token: localToken });
+          setShowLoginPage(false);
+          console.info("[AUTH] Session restored from local token.");
+        }
       }
       setAuthLoading(false);
     }).catch(err => {
       console.error("[AUTH] Error getting session:", err);
+      const localToken = localStorage.getItem("sb_access_token");
+      if (localToken) {
+        setSession({ access_token: localToken });
+        setShowLoginPage(false);
+      }
       if (mounted) setAuthLoading(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, newSession) => {
       if (!mounted) return;
-      setSession(newSession);
 
       if (event === "PASSWORD_RECOVERY") {
         setIsResetPasswordView(true);
       }
 
       if (newSession?.access_token) {
+        setSession(newSession);
         localStorage.setItem("sb_access_token", newSession.access_token);
         setShowLoginPage(false);
-      } else {
+      } else if (event === "SIGNED_OUT") {
+        setSession(null);
         localStorage.removeItem("sb_access_token");
         setShowLoginPage(true);
         setSettingsLoaded(false);
@@ -144,7 +159,8 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (session?.access_token && !showLoginPage) {
+    const token = session?.access_token || localStorage.getItem("sb_access_token");
+    if (token && !showLoginPage) {
       fetchStatus();
       fetchChannels(true);
     }
@@ -412,17 +428,18 @@ export default function App() {
   }
 
   // 3. Unauthenticated Login Gate
-  if (showLoginPage || !session) {
+  const hasValidAuth = !!(session?.access_token || localStorage.getItem("sb_access_token"));
+  if (showLoginPage || !hasValidAuth) {
     return (
       <LoginPage
         onLoginSuccess={(newSession) => {
+          setShowLoginPage(false);
           if (newSession) {
             setSession(newSession);
           }
-          setShowLoginPage(false);
           supabase.auth.getSession().then(({ data }) => {
-            if (data.session) setSession(data.session);
-          });
+            if (data?.session) setSession(data.session);
+          }).catch(() => {});
         }}
       />
     );

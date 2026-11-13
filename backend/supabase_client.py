@@ -307,7 +307,8 @@ def save_user_settings_to_db(user_id: str, settings_update: dict) -> dict:
             "auto_post_telegram", "auto_post_n8n", "text_prefix", "text_suffix",
             "find_text", "replace_text", "replacement_rules", "override_all_links",
             "custom_link_url", "remove_all_links", "override_media_image", "custom_image_url",
-            "strip_media_images", "keyword_filter", "filter_mode", "routing_pipelines",
+            "strip_media_images", "keyword_filter", "filter_mode", "enable_translation",
+            "target_language", "source_language", "routing_pipelines",
             "enabled", "created_at", "updated_at"
         }
         clean_row = {k: v for k, v in existing.items() if k in valid_cols}
@@ -360,12 +361,57 @@ def update_user_profile_in_db(user_id: str, profile_update: dict) -> dict:
         return {}
 
     try:
-        profile_update["id"] = user_id
-        res = supabase.table("profiles").upsert(profile_update).execute()
-        if res.data:
-            return res.data[0]
+        from datetime import datetime, timezone
+        valid_cols = {
+            "email", "telegram_session_string", "telegram_phone",
+            "telegram_first_name", "telegram_username", "telegram_user_id",
+            "created_at", "updated_at"
+        }
+        profile_update["updated_at"] = datetime.now(timezone.utc).isoformat()
+        clean_update = {k: v for k, v in profile_update.items() if k in valid_cols}
+
+        # 1. Primary: Direct UPDATE by id (never triggers INSERT NOT NULL constraints such as email)
+        try:
+            res = supabase.table("profiles").update(clean_update).eq("id", user_id).execute()
+            if res.data and len(res.data) > 0:
+                print(f"✅ [PROFILE UPDATE SUCCESS] user {user_id[:8]} profile updated in DB.")
+                return res.data[0]
+        except Exception as col_err:
+            # Fallback if telegram_user_id column is not yet migrated in Supabase table
+            if "telegram_user_id" in clean_update:
+                safe_no_tg_id = {k: v for k, v in clean_update.items() if k != "telegram_user_id"}
+                try:
+                    res = supabase.table("profiles").update(safe_no_tg_id).eq("id", user_id).execute()
+                    if res.data and len(res.data) > 0:
+                        print(f"✅ [PROFILE RESILIENT UPDATE SUCCESS] user {user_id[:8]} updated (without telegram_user_id).")
+                        return res.data[0]
+                except Exception:
+                    pass
+            print(f"⚠️ [PROFILE UPDATE NOTICE] Direct update by id returned notice: {col_err}. Trying upsert fallback...")
+
+        # 2. Fallback: If no pre-existing row was found to update, upsert with full record
+        full_row = clean_update.copy()
+        full_row["id"] = user_id
+        if "email" not in full_row:
+            existing = get_user_profile_from_db(user_id)
+            if existing.get("email"):
+                full_row["email"] = existing["email"]
+
+        try:
+            upsert_res = supabase.table("profiles").upsert(full_row, on_conflict="id").execute()
+            if upsert_res.data and len(upsert_res.data) > 0:
+                print(f"✅ [PROFILE UPSERT SUCCESS] user {user_id[:8]} profile upserted in DB.")
+                return upsert_res.data[0]
+        except Exception as up_err:
+            if "telegram_user_id" in full_row:
+                full_row_no_tg = {k: v for k, v in full_row.items() if k != "telegram_user_id"}
+                upsert_res = supabase.table("profiles").upsert(full_row_no_tg, on_conflict="id").execute()
+                if upsert_res.data and len(upsert_res.data) > 0:
+                    return upsert_res.data[0]
+            raise up_err
+
     except Exception as e:
-        print(f"Error updating profile in Supabase for {user_id}: {e}")
+        print(f"❌ [PROFILE UPDATE ERROR] Error updating profile in Supabase for {user_id}: {e}")
 
     return profile_update
 
@@ -640,7 +686,9 @@ def get_user_subscription_from_db(user_id: str) -> dict:
                 return sub
 
             # Subscription is currently active
-            if "799" in plan_id or "pro" in plan_id:
+            if "1499" in plan_id or "ai" in plan_id:
+                sub["plan_name"] = "AI Translation & Multi-Channel Plan (₹1499)"
+            elif "799" in plan_id or "pro" in plan_id:
                 sub["plan_name"] = "Pro Plan (₹799)"
             elif "599" in plan_id or "basic" in plan_id:
                 sub["plan_name"] = "Basic Plan (₹599)"
