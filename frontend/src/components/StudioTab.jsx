@@ -34,6 +34,60 @@ const cleanDisplayMessage = (msgText) => {
   return msgText;
 };
 
+// Returns icon + label for a media type string
+const MEDIA_META = {
+  photo:    { icon: "fa-solid fa-image",       label: "Photo",    color: "#38bdf8" },
+  video:    { icon: "fa-solid fa-video",       label: "Video",    color: "#a78bfa" },
+  gif:      { icon: "fa-solid fa-film",        label: "GIF",      color: "#fb923c" },
+  sticker:  { icon: "fa-solid fa-star",        label: "Sticker",  color: "#facc15" },
+  document: { icon: "fa-solid fa-file",        label: "Document", color: "#94a3b8" },
+  media:    { icon: "fa-solid fa-paperclip",   label: "Media",    color: "#94a3b8" },
+};
+
+const MediaBadge = ({ mediaType, hasMedia }) => {
+  if (!hasMedia && !mediaType) return null;
+  const key = (mediaType || "media").toLowerCase();
+  const meta = MEDIA_META[key] || MEDIA_META["media"];
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: "4px",
+      background: `${meta.color}18`, border: `1px solid ${meta.color}55`,
+      color: meta.color, borderRadius: "5px",
+      padding: "2px 7px", fontSize: "10px", fontWeight: "700",
+      marginBottom: "6px"
+    }}>
+      <i className={meta.icon} style={{ fontSize: "9px" }}></i> {meta.label}
+    </span>
+  );
+};
+
+const ReplyBlock = ({ isReply, replyText, replySender }) => {
+  if (!isReply) return null;
+  const snippet = (replyText || "").trim().slice(0, 120);
+  return (
+    <div style={{
+      borderLeft: "2px solid rgba(99,102,241,0.7)",
+      background: "rgba(99,102,241,0.07)",
+      borderRadius: "0 6px 6px 0",
+      padding: "4px 8px",
+      marginBottom: "6px",
+      fontSize: "11px",
+      color: "var(--text-muted)",
+      lineHeight: "1.4"
+    }}>
+      <span style={{ color: "#818cf8", fontWeight: "700", fontSize: "10px" }}>
+        <i className="fa-solid fa-reply" style={{ marginRight: "4px", fontSize: "9px" }}></i>
+        {replySender ? `↪ ${replySender}` : "↪ Reply"}
+      </span>
+      {snippet ? (
+        <div style={{ marginTop: "2px", fontStyle: snippet.startsWith("[") ? "italic" : "normal", opacity: 0.85 }}>
+          {snippet}{(replyText || "").length > 120 ? "…" : ""}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
 const createInitialPipeline = (settings = {}) => ({
   id: "pipe_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
   name: "Channel Rule 1",
@@ -74,23 +128,26 @@ export default function StudioTab({
   const isAuthorized = status?.authorized;
   const settings = status?.settings || {};
 
-  // Multi-Pipeline State with instant localStorage cache fallback
+  const userId = status?.account?.id || "";
+  const userStorageKey = userId ? `cached_routing_pipelines_${userId}` : "cached_routing_pipelines";
+
+  // Multi-Pipeline State with user-scoped localStorage cache fallback
   const [pipelines, setPipelines] = useState(() => {
+    if (Array.isArray(status?.settings?.routing_pipelines) && status.settings.routing_pipelines.length > 0) {
+      return status.settings.routing_pipelines;
+    }
     try {
-      const cached = localStorage.getItem("cached_routing_pipelines");
+      const cached = localStorage.getItem(userStorageKey);
       if (cached) {
         const parsed = JSON.parse(cached);
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
       }
     } catch (e) {}
-    if (Array.isArray(status?.settings?.routing_pipelines) && status.settings.routing_pipelines.length > 0) {
-      return status.settings.routing_pipelines;
-    }
     return [createInitialPipeline(status?.settings || {})];
   });
   const [activePipelineIndex, setActivePipelineIndex] = useState(0);
 
-  // Sync pipelines whenever backend status updates with valid pipelines
+  // Sync pipelines whenever backend status updates or user changes
   useEffect(() => {
     if (Array.isArray(status?.settings?.routing_pipelines) && status.settings.routing_pipelines.length > 0) {
       const normalized = status.settings.routing_pipelines.map((p, idx) => ({
@@ -106,16 +163,21 @@ export default function StudioTab({
       }));
       setPipelines(normalized);
       try {
-        localStorage.setItem("cached_routing_pipelines", JSON.stringify(normalized));
+        localStorage.setItem(userStorageKey, JSON.stringify(normalized));
       } catch (e) {}
+    } else if (status?.settings) {
+      // User has no custom pipelines or switched to fresh user: reset to user's initial pipeline
+      const freshInitial = [createInitialPipeline(status?.settings || {})];
+      setPipelines(freshInitial);
+      setActivePipelineIndex(0);
     }
-  }, [JSON.stringify(status?.settings?.routing_pipelines)]);
+  }, [userId, JSON.stringify(status?.settings?.routing_pipelines)]);
 
-  // Save to localStorage whenever pipelines change
+  // Save to localStorage whenever pipelines change (strictly scoped to user)
   const persistPipelines = (newList) => {
     setPipelines(newList);
     try {
-      localStorage.setItem("cached_routing_pipelines", JSON.stringify(newList));
+      localStorage.setItem(userStorageKey, JSON.stringify(newList));
     } catch (e) {}
   };
 
@@ -124,11 +186,38 @@ export default function StudioTab({
   const safeActiveIndex = Math.min(activePipelineIndex, currentPipelines.length - 1);
   const activePipe = currentPipelines[safeActiveIndex] || createInitialPipeline(settings);
 
+  // Plan-based pipeline limits (must come after currentPipelines is defined)
+  const isSubActive = status?.subscription?.status === "active";
+  const currentPlan = isSubActive ? (status?.subscription?.plan_id || "free") : "free";
+  const isPro = currentPlan === "plan_799";
+  const isBasic = currentPlan === "plan_599";
+  // Basic (599): max 1 channel rule. Pro (799): unlimited.
+  const maxPipelines = isPro ? Infinity : isBasic ? 1 : 1;
+  const canAddPipeline = currentPipelines.length < maxPipelines;
+
   // Helper to update active pipeline
   const updateActivePipe = (fields) => {
     const copy = [...(pipelines.length > 0 ? pipelines : [createInitialPipeline(settings)])];
     copy[safeActiveIndex] = { ...copy[safeActiveIndex], ...fields };
     persistPipelines(copy);
+  };
+
+  // Reverse-route conflict checker
+  // Returns true if adding (newSrc → newDest) pair would create a circular/reverse conflict
+  // with any existing pair (newDest → newSrc) across ALL pipelines (excluding `excludePipelineIndex`).
+  const hasReverseConflict = (newSrc, newDest, excludePipelineIndex = -1) => {
+    if (!newSrc || !newDest || newSrc === "all") return false;
+    for (let i = 0; i < currentPipelines.length; i++) {
+      if (i === excludePipelineIndex) continue;
+      const pipe = currentPipelines[i];
+      const pSrcs = pipe.source_channels || [];
+      const pDests = pipe.destination_channels || [];
+      // Conflict: another pipeline has source=newDest AND destination=newSrc
+      const srcMatch = pSrcs.some((s) => isChannelMatch(s, newDest));
+      const destMatch = pDests.some((d) => isChannelMatch(d, newSrc));
+      if (srcMatch && destMatch) return true;
+    }
+    return false;
   };
 
   // Add new pipeline
@@ -398,22 +487,45 @@ export default function StudioTab({
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <button
-              className="btn btn-outline btn-sm"
-              onClick={handleAddPipeline}
-              style={{
-                background: "rgba(59, 130, 246, 0.15)",
-                borderColor: "var(--primary-blue)",
-                color: "#60a5fa",
-                fontSize: "12px",
-                padding: "6px 14px",
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "6px"
-              }}
-            >
-              <i className="fa-solid fa-plus"></i> Add Channel Rule
-            </button>
+            {canAddPipeline ? (
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={handleAddPipeline}
+                style={{
+                  background: "rgba(59, 130, 246, 0.15)",
+                  borderColor: "var(--primary-blue)",
+                  color: "#60a5fa",
+                  fontSize: "12px",
+                  padding: "6px 14px",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px"
+                }}
+              >
+                <i className="fa-solid fa-plus"></i> Add Channel Rule
+              </button>
+            ) : (
+              <div
+                title="Upgrade to Pro (₹799) to add multiple channel rules"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  background: "rgba(252, 213, 53, 0.08)",
+                  border: "1px dashed rgba(252, 213, 53, 0.45)",
+                  borderRadius: "8px",
+                  padding: "5px 12px",
+                  fontSize: "11px",
+                  color: "var(--primary-yellow)",
+                  cursor: "default"
+                }}
+              >
+                <i className="fa-solid fa-lock" style={{ fontSize: "10px" }}></i>
+                <span>
+                  1 Rule Limit — <strong style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => alert("Upgrade to the Pro plan (₹799/month) to unlock unlimited channel routing rules!")}>Upgrade to Pro ↗</strong>
+                </span>
+              </div>
+            )}
             <button
               className="btn btn-primary btn-sm"
               onClick={handleSave}
@@ -544,6 +656,13 @@ export default function StudioTab({
                   } else {
                     const filtered = current.filter((c) => c !== "all");
                     if (!filtered.some((c) => isChannelMatch(c, val))) {
+                      // Check for reverse conflict: does any pipeline already have source=dest AND dest=val?
+                      const dests = activePipe.destination_channels || [];
+                      const conflictDest = dests.find((d) => hasReverseConflict(val, d, safeActiveIndex));
+                      if (conflictDest) {
+                        alert(`⚠️ Reverse route conflict!\n\nAnother channel rule already routes from "${getChannelName(conflictDest)}" → "${getChannelName(val)}".\nAdding "${getChannelName(val)}" as a source here would create a circular loop.`);
+                        return;
+                      }
                       updateActivePipe({ source_channels: [...filtered, val] });
                     }
                   }
@@ -634,6 +753,13 @@ export default function StudioTab({
                   if (!val) return;
                   const current = activePipe.destination_channels || [];
                   if (!current.some((c) => isChannelMatch(c, val))) {
+                    // Check for reverse conflict: does any pipeline already have source=val AND destination=any of our sources?
+                    const srcs = (activePipe.source_channels || []).filter((s) => s !== "all");
+                    const conflictSrc = srcs.find((s) => hasReverseConflict(s, val, safeActiveIndex));
+                    if (conflictSrc) {
+                      alert(`⚠️ Reverse route conflict!\n\nAnother channel rule already routes from "${getChannelName(val)}" → "${getChannelName(conflictSrc)}".\nAdding "${getChannelName(val)}" as a destination here would create a circular loop.`);
+                      return;
+                    }
                     updateActivePipe({ destination_channels: [...current, val] });
                   }
                 }}
@@ -746,8 +872,11 @@ export default function StudioTab({
                       <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>{formatLocalDate(m.date)}</span>
                     </div>
 
-                    <div className="msg-body" style={{ fontSize: "13px", fontWeight: "600", color: "#ffffff", margin: "8px 0", lineHeight: "1.4" }}>
-                      {m.raw_message}
+                    <ReplyBlock isReply={m.is_reply} replyText={m.reply_text} replySender={m.reply_sender} />
+                    <MediaBadge hasMedia={m.has_media} mediaType={m.media_type} />
+
+                    <div className="msg-body" style={{ fontSize: "13px", fontWeight: "600", color: "#ffffff", margin: "4px 0", lineHeight: "1.4", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                      {m.raw_message || (!m.has_media ? <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>No text</span> : null)}
                     </div>
 
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "10px", paddingTop: "8px", borderTop: "1px solid rgba(255, 255, 255, 0.05)" }}>
@@ -1046,40 +1175,6 @@ export default function StudioTab({
           </div>
 
           <div className="studio-col-body" style={{ padding: "14px", display: "flex", flexDirection: "column", gap: "12px" }}>
-            {/* 🧪 Real-time Interactive Test Transformation Box */}
-            <div style={{
-              background: "rgba(16, 185, 129, 0.08)",
-              border: "1px solid rgba(16, 185, 129, 0.3)",
-              borderRadius: "10px",
-              padding: "12px"
-            }}>
-              <h4 style={{ fontSize: "12px", fontWeight: "700", color: "#6ee7b7", marginBottom: "6px", display: "flex", alignItems: "center", gap: "6px" }}>
-                <i className="fa-solid fa-vial"></i> Live Rule Tester ({activePipe.name})
-              </h4>
-              <textarea
-                className="form-control"
-                rows={2}
-                style={{ fontSize: "12px", marginBottom: "8px", background: "rgba(0,0,0,0.4)" }}
-                placeholder="Type sample message here..."
-                value={testInput}
-                onChange={(e) => setTestInput(e.target.value)}
-              />
-              <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "4px" }}>Output Result:</div>
-              <div style={{
-                background: "rgba(0, 0, 0, 0.6)",
-                border: "1px solid rgba(255, 255, 255, 0.1)",
-                borderRadius: "6px",
-                padding: "8px 10px",
-                fontSize: "12px",
-                fontWeight: "600",
-                color: "#ffffff",
-                minHeight: "36px",
-                wordBreak: "break-word"
-              }}>
-                {testOutput || <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>No output</span>}
-              </div>
-            </div>
-
             {/* Destination Stream Messages */}
             <div style={{ flex: 1, minHeight: "260px" }}>
               <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--text-muted)", marginBottom: "8px", textTransform: "uppercase" }}>
@@ -1109,8 +1204,10 @@ export default function StudioTab({
                         </strong>
                         <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>{formatLocalDate(m.date)}</span>
                       </div>
-                      <div className="msg-body" style={{ fontSize: "12px", fontWeight: "600", color: "#ffffff", margin: "6px 0", lineHeight: "1.3" }}>
-                        {cleanDisplayMessage(m.transformed_message || m.raw_message)}
+                      <ReplyBlock isReply={m.is_reply} replyText={m.reply_text} replySender={m.reply_sender} />
+                      <MediaBadge hasMedia={m.has_media} mediaType={m.media_type} />
+                      <div className="msg-body" style={{ fontSize: "12px", fontWeight: "600", color: "#ffffff", margin: "4px 0", lineHeight: "1.3", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                        {cleanDisplayMessage(m.transformed_message || m.raw_message) || (!m.has_media ? <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>No text</span> : null)}
                       </div>
                     </div>
                   ))}

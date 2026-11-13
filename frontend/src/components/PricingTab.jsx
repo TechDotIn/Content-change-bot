@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { authFetch, getApiUrl } from "../api";
 
-export default function PricingTab({ status, onRefresh, showToast }) {
+export default function PricingTab({ status, onRefresh, showToast, setActiveTab }) {
   const isSubActive = status?.subscription?.status === "active";
   const isExpired = status?.subscription?.status === "expired" || status?.subscription?.is_expired;
   const currentPlan = isSubActive ? (status?.subscription?.plan_id || "free") : "free";
@@ -157,10 +157,13 @@ export default function PricingTab({ status, onRefresh, showToast }) {
 
           <ul className="plan-features">
             <li><i className="fa-solid fa-circle-check"></i> 1 Telegram Account Session</li>
-            <li><i className="fa-solid fa-circle-check"></i> Unlimited Source Channels</li>
+            <li><i className="fa-solid fa-circle-check"></i> <strong>1 Channel Routing Rule</strong></li>
+            <li><i className="fa-solid fa-circle-check"></i> Multiple Source Channels (within 1 rule)</li>
+            <li><i className="fa-solid fa-circle-check"></i> Multiple Destination Channels (within 1 rule)</li>
             <li><i className="fa-solid fa-circle-check"></i> Real-Time Text Modifier Engine</li>
-            <li><i className="fa-solid fa-circle-check"></i> n8n Webhook Instant Integration</li>
+            <li><i className="fa-solid fa-circle-check"></i> n8n Webhook Integration</li>
             <li><i className="fa-solid fa-circle-check"></i> 24/7 Automated Sync Loop</li>
+            <li style={{ color: "var(--text-muted)", opacity: 0.5 }}><i className="fa-solid fa-circle-xmark"></i> Multiple Channel Rules</li>
           </ul>
 
           <button
@@ -191,7 +194,8 @@ export default function PricingTab({ status, onRefresh, showToast }) {
 
           <ul className="plan-features">
             <li><i className="fa-solid fa-circle-check"></i> <strong>Everything in Basic +</strong></li>
-            <li><i className="fa-solid fa-circle-check"></i> Multi-Destination Channel Routing</li>
+            <li><i className="fa-solid fa-circle-check"></i> <strong>Unlimited Channel Routing Rules</strong></li>
+            <li><i className="fa-solid fa-circle-check"></i> Multiple Sources & Destinations per Rule</li>
             <li><i className="fa-solid fa-circle-check"></i> Advanced Link Overriding & Stripping</li>
             <li><i className="fa-solid fa-circle-check"></i> Bulk Keyword Filtering Rules</li>
             <li><i className="fa-solid fa-circle-check"></i> Priority Telegram Sync Engine</li>
@@ -212,6 +216,35 @@ export default function PricingTab({ status, onRefresh, showToast }) {
               <><i className="fa-solid fa-crown"></i> Subscribe Pro (₹799)</>
             )}
           </button>
+        </div>
+      </div>
+
+      {/* Bot Notification Info Banner */}
+      <div style={{
+        maxWidth: "800px",
+        margin: "28px auto 0 auto",
+        background: "rgba(59, 130, 246, 0.07)",
+        border: "1px solid rgba(59, 130, 246, 0.25)",
+        borderRadius: "12px",
+        padding: "16px 20px",
+        display: "flex",
+        alignItems: "center",
+        gap: "14px"
+      }}>
+        <i className="fa-solid fa-robot" style={{ fontSize: "22px", color: "var(--primary-blue)", flexShrink: 0 }}></i>
+        <div>
+          <div style={{ fontSize: "13px", fontWeight: "600", color: "#93c5fd", marginBottom: "3px" }}>
+            🔔 Never miss a renewal — get Telegram bot notifications
+          </div>
+          <div style={{ fontSize: "12px", color: "var(--text-muted)", lineHeight: "1.5" }}>
+            Receive automatic DMs 3 days before your plan expires and instantly when it lapses.
+            <button
+              onClick={() => setActiveTab && setActiveTab("tab-overview")}
+              style={{ background: "none", border: "none", color: "var(--primary-blue)", cursor: "pointer", fontSize: "12px", padding: "0 4px", textDecoration: "underline" }}
+            >
+              Set up in Overview →
+            </button>
+          </div>
         </div>
       </div>
     </section>

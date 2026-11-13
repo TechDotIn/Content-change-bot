@@ -433,17 +433,76 @@ def get_all_users_with_telegram_sessions() -> List[dict]:
     return []
 
 
+# --- Subscription Notification Bot ---
+
+def send_bot_notification(telegram_user_id: int | str, message: str) -> bool:
+    """
+    Send a Telegram message to a user via the notification bot.
+    Returns True on success, False on failure.
+    Requires NOTIFICATION_BOT_TOKEN in environment.
+    The user must have previously started the bot (/start) to receive DMs.
+    """
+    try:
+        from config import NOTIFICATION_BOT_TOKEN
+        if not NOTIFICATION_BOT_TOKEN or not telegram_user_id:
+            return False
+        import requests as _req
+        url = f"https://api.telegram.org/bot{NOTIFICATION_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": str(telegram_user_id),
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False
+        }
+        resp = _req.post(url, json=payload, timeout=10)
+        if resp.status_code == 200:
+            print(f"[NOTIFICATION BOT] Message sent to Telegram user {telegram_user_id}")
+            return True
+        else:
+            print(f"[NOTIFICATION BOT] Failed to send to {telegram_user_id}: {resp.status_code} {resp.text[:200]}")
+            return False
+    except Exception as e:
+        print(f"[NOTIFICATION BOT] Error sending message to {telegram_user_id}: {e}")
+        return False
+
+
+def get_telegram_user_id_for_sub_user(user_id: str) -> str | None:
+    """Fetch the telegram_user_id from the profiles table for a given supabase user_id."""
+    if not IS_SUPABASE_CONFIGURED or not supabase:
+        return None
+    try:
+        res = supabase.table("profiles").select("telegram_user_id").eq("id", user_id).execute()
+        if res.data and len(res.data) > 0:
+            return str(res.data[0].get("telegram_user_id") or "")
+    except Exception as e:
+        print(f"[NOTIFICATION BOT] Could not fetch telegram_user_id for {user_id}: {e}")
+    return None
+
+
 # --- Supabase Subscription Helper Functions ---
 
 def check_and_expire_all_subscriptions():
-    """Batch expire all active subscriptions whose current_period_end or computed 30-day validity is in the past."""
+    """Batch expire all active subscriptions whose current_period_end or computed 30-day validity is in the past.
+    Sends expiry notification via Telegram bot to affected users.
+    """
     if not IS_SUPABASE_CONFIGURED or not supabase:
         return
     try:
         from datetime import datetime, timezone, timedelta
         from dateutil import parser as dt_parser
+        from config import NOTIFICATION_BOT_TOKEN, APP_URL
         now_dt = datetime.now(timezone.utc)
         now_iso = now_dt.isoformat()
+
+        def _build_expiry_message(plan_name: str) -> str:
+            return (
+                f"🔴 <b>Your Telegram Sync Hub subscription has expired.</b>\n\n"
+                f"Plan: <b>{plan_name}</b>\n"
+                f"Your channel syncing has been paused.\n\n"
+                f"Renew now to resume uninterrupted forwarding:\n"
+                f"👉 <a href='{APP_URL}'>{APP_URL}</a>\n\n"
+                f"Need help? Reply to this message."
+            )
 
         # 1. Update records with explicit current_period_end < now
         res = (
@@ -456,6 +515,15 @@ def check_and_expire_all_subscriptions():
         )
         if res.data and len(res.data) > 0:
             print(f"[SUBSCRIPTION BATCH] Automatically expired {len(res.data)} outdated subscriptions in DB.")
+            # Send bot notification to each newly expired user
+            if NOTIFICATION_BOT_TOKEN:
+                for sub in res.data:
+                    uid = sub.get("user_id")
+                    plan_name = sub.get("plan_name", "Paid Plan")
+                    if uid:
+                        tg_uid = get_telegram_user_id_for_sub_user(uid)
+                        if tg_uid:
+                            send_bot_notification(tg_uid, _build_expiry_message(plan_name))
 
         # 2. Check active records where current_period_end is null but plan is a paid plan
         null_res = (
@@ -482,6 +550,14 @@ def check_and_expire_all_subscriptions():
                                 "updated_at": now_iso
                             }).eq("id", s["id"]).execute()
                             print(f"[SUBSCRIPTION BATCH] Expired subscription {s['id']} (user {s.get('user_id')}) whose 30-day period ended on {period_end.isoformat()}.")
+                            # Send bot notification
+                            if NOTIFICATION_BOT_TOKEN:
+                                uid = s.get("user_id")
+                                plan_name = s.get("plan_name", "Paid Plan")
+                                if uid:
+                                    tg_uid = get_telegram_user_id_for_sub_user(uid)
+                                    if tg_uid:
+                                        send_bot_notification(tg_uid, _build_expiry_message(plan_name))
                     except Exception as parse_e:
                         print(f"Error checking sub {s.get('id')}: {parse_e}")
     except Exception as e:
