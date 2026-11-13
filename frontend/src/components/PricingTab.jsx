@@ -26,10 +26,19 @@ export default function PricingTab({ status, onRefresh, showToast, setActiveTab 
       const orderData = await orderRes.json();
       console.info("[PAYMENT] Order create response:", orderData);
 
-      if (!orderRes.ok || !orderData.success || !orderData.order_id || !orderData.order_id.startsWith("order_")) {
+      if (!orderRes.ok || !orderData.success || !orderData.order_id) {
         console.error("[PAYMENT] Error response:", orderData);
         notify("Payment Order Error: " + (orderData.detail || "Could not initialize payment order."), "error");
         setLoadingPlan(null);
+        return;
+      }
+
+      // Check if Hosted Payment Link (rzp.io) is returned (works 100% on any domain with live UPI QR)
+      if (orderData.payment_url || orderData.short_url) {
+        const payUrl = orderData.payment_url || orderData.short_url;
+        console.info("[PAYMENT] Redirecting to Razorpay Hosted Payment Link:", payUrl);
+        notify("Redirecting to Razorpay Secure Payment...", "info");
+        window.location.href = payUrl;
         return;
       }
 

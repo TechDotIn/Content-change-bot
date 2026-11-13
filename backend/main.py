@@ -126,6 +126,11 @@ class VerifyPaymentRequest(BaseModel):
     plan_id: str
 
 
+class VerifyPaymentLinkRequest(BaseModel):
+    payment_link_id: str
+    plan_id: Optional[str] = None
+
+
 class TestTransformRequest(BaseModel):
     sample_text: str
     text_prefix: Optional[str] = ""
@@ -1141,7 +1146,52 @@ async def create_subscription_order(
     try:
         import time
         auth = (RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)
-        payload = {
+        
+        # 1. Primary: Generate Hosted Razorpay Payment Link (Works with live UPI QR on ANY domain with 0 restrictions)
+        plink_payload = {
+            "amount": plan_info["amount"],
+            "currency": "INR",
+            "accept_partial": False,
+            "description": f"{plan_info['name']} - TelegramSync Hub",
+            "customer": {
+                "name": user_email.split("@")[0] if user_email else "Subscriber",
+                "email": user_email
+            },
+            "notify": {
+                "sms": False,
+                "email": False
+            },
+            "reminder_enable": False,
+            "notes": {
+                "user_id": user_id,
+                "email": user_email,
+                "plan_id": plan_id,
+                "plan_name": plan_info["name"]
+            },
+            "callback_url": f"{APP_URL}/?payment=success&plan_id={plan_id}",
+            "callback_method": "get"
+        }
+        
+        try:
+            res = requests.post("https://api.razorpay.com/v1/payment_links", json=plink_payload, auth=auth, timeout=10)
+            res_data = res.json()
+            if res.status_code == 200 and "short_url" in res_data:
+                return {
+                    "success": True,
+                    "order_id": res_data["id"],
+                    "payment_url": res_data["short_url"],
+                    "short_url": res_data["short_url"],
+                    "amount": res_data["amount"],
+                    "currency": res_data["currency"],
+                    "key_id": RAZORPAY_KEY_ID,
+                    "plan_id": plan_id,
+                    "plan_name": plan_info["name"]
+                }
+        except Exception as plink_err:
+            logger.warning(f"Payment Link API notice: {plink_err}. Falling back to standard order.")
+
+        # 2. Fallback: Standard Orders API
+        order_payload = {
             "amount": plan_info["amount"],
             "currency": "INR",
             "receipt": f"rcpt_{int(time.time())}_{user_id[:8]}",
@@ -1152,18 +1202,17 @@ async def create_subscription_order(
                 "plan_name": plan_info["name"]
             }
         }
-        res = requests.post("https://api.razorpay.com/v1/orders", json=payload, auth=auth, timeout=10)
-        res_data = res.json()
-
-        if res.status_code != 200 or "id" not in res_data:
-            err_msg = res_data.get("error", {}).get("description") or "Razorpay order creation failed"
+        res_order = requests.post("https://api.razorpay.com/v1/orders", json=order_payload, auth=auth, timeout=10)
+        order_data = res_order.json()
+        if res_order.status_code != 200 or "id" not in order_data:
+            err_msg = order_data.get("error", {}).get("description") or "Razorpay order creation failed"
             raise HTTPException(status_code=400, detail=err_msg)
 
         return {
             "success": True,
-            "order_id": res_data["id"],
-            "amount": res_data["amount"],
-            "currency": res_data["currency"],
+            "order_id": order_data["id"],
+            "amount": order_data["amount"],
+            "currency": order_data["currency"],
             "key_id": RAZORPAY_KEY_ID,
             "plan_id": plan_id,
             "plan_name": plan_info["name"]
@@ -1172,6 +1221,64 @@ async def create_subscription_order(
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=f"Order generation error: {str(e)}")
+
+
+@app.post("/api/subscription/verify-payment-link")
+async def verify_subscription_payment_link(
+    data: VerifyPaymentLinkRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    user_id = current_user["id"]
+    plink_id = data.payment_link_id.strip()
+
+    if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
+        raise HTTPException(status_code=500, detail="Razorpay payment keys are not configured on server.")
+
+    try:
+        auth = (RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)
+        res = requests.get(f"https://api.razorpay.com/v1/payment_links/{plink_id}", auth=auth, timeout=10)
+        if res.status_code != 200:
+            raise HTTPException(status_code=400, detail="Could not verify payment link with Razorpay.")
+
+        link_data = res.json()
+        status_val = link_data.get("status")
+        if status_val != "paid":
+            raise HTTPException(status_code=400, detail=f"Payment status is '{status_val}', not 'paid'.")
+
+        notes = link_data.get("notes", {})
+        plan_id = (data.plan_id or notes.get("plan_id") or "plan_599").lower().strip()
+        plan_info = PLAN_DETAILS.get(plan_id, {"amount": 59900, "price": 599, "name": "Basic Plan (₹599)"})
+
+        from datetime import datetime, timezone, timedelta
+        now_dt = datetime.now(timezone.utc)
+        period_end_dt = now_dt + timedelta(days=30)
+
+        payments = link_data.get("payments") or []
+        payment_id = payments[0].get("payment_id") if payments else None
+
+        sub_record = {
+            "user_id": user_id,
+            "plan_id": plan_id,
+            "plan_name": plan_info["name"],
+            "amount_paid": plan_info["price"],
+            "status": "active",
+            "razorpay_order_id": plink_id,
+            "razorpay_payment_id": payment_id,
+            "current_period_start": now_dt.isoformat(),
+            "current_period_end": period_end_dt.isoformat(),
+            "updated_at": now_dt.isoformat()
+        }
+
+        saved_sub = update_user_subscription_in_db(user_id, sub_record)
+        return {
+            "success": True,
+            "message": f"🎉 Payment verified! {plan_info['name']} activated successfully.",
+            "subscription": saved_sub
+        }
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Payment link verification error: {str(e)}")
 
 
 @app.post("/api/subscription/verify-payment")

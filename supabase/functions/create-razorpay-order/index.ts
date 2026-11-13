@@ -40,8 +40,49 @@ Deno.serve(async (req: Request) => {
 
     const planInfo = PLAN_PRICES[plan_id];
 
-    // Call Razorpay API to create order
+    // Call Razorpay API to create hosted payment link (works with live UPI QR on any domain)
     const authHeader = "Basic " + btoa(`${keyId}:${keySecret}`);
+    const plinkRes = await fetch("https://api.razorpay.com/v1/payment_links", {
+      method: "POST",
+      headers: {
+        Authorization: authHeader,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        amount: planInfo.amount,
+        currency: "INR",
+        accept_partial: false,
+        description: `${planInfo.name} - TelegramSync Hub`,
+        notify: { sms: false, email: false },
+        reminder_enable: false,
+        notes: {
+          plan_id: plan_id,
+          plan_name: planInfo.name,
+        },
+        callback_url: `https://telegram.adshatke.site/?payment=success&plan_id=${plan_id}`,
+        callback_method: "get"
+      }),
+    });
+
+    const plinkData = await plinkRes.json();
+    if (plinkRes.ok && plinkData.short_url) {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          order_id: plinkData.id,
+          payment_url: plinkData.short_url,
+          short_url: plinkData.short_url,
+          amount: plinkData.amount,
+          currency: plinkData.currency,
+          key_id: keyId,
+          plan_id: plan_id,
+          plan_name: planInfo.name,
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Fallback: Standard Orders API
     const razorpayRes = await fetch("https://api.razorpay.com/v1/orders", {
       method: "POST",
       headers: {
