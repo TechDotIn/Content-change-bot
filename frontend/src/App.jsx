@@ -415,7 +415,10 @@ export default function App() {
   if (showLoginPage || !session) {
     return (
       <LoginPage
-        onLoginSuccess={() => {
+        onLoginSuccess={(newSession) => {
+          if (newSession) {
+            setSession(newSession);
+          }
           setShowLoginPage(false);
           supabase.auth.getSession().then(({ data }) => {
             if (data.session) setSession(data.session);

@@ -82,11 +82,21 @@ export default function Header({ activeTab, setActiveTab, status, onOpenLogin, o
             </button>
           </div>
         ) : status?.status_code === "RECONNECTING" || status?.status_code === "DISCONNECTED_TEMPORARILY" ? (
-          <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", background: "rgba(245, 158, 11, 0.12)", border: "1px solid rgba(245, 158, 11, 0.3)", padding: "5px 10px", borderRadius: "8px", fontSize: "11px" }}>
-            <span style={{ color: "#f59e0b", fontWeight: "600", display: "flex", alignItems: "center", gap: "4px" }}>
-              <i className="fa-solid fa-spinner fa-spin" style={{ fontSize: "10px" }}></i>
-              {status.status_code === "RECONNECTING" ? "Reconnecting..." : "Temporarily Offline"}
-            </span>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", background: "rgba(245, 158, 11, 0.12)", border: "1px solid rgba(245, 158, 11, 0.3)", padding: "5px 10px", borderRadius: "8px", fontSize: "11px" }}>
+              <span style={{ color: "#f59e0b", fontWeight: "600", display: "flex", alignItems: "center", gap: "4px" }}>
+                <i className="fa-solid fa-spinner fa-spin" style={{ fontSize: "10px" }}></i>
+                {status.status_code === "RECONNECTING" ? "Reconnecting..." : "Temporarily Offline"}
+              </span>
+            </div>
+            <button
+              className="btn btn-warning btn-sm"
+              style={{ padding: "5px 10px", fontSize: "11px" }}
+              onClick={onOpenLogin}
+              title="Click to reconnect Telegram session"
+            >
+              <i className="fa-solid fa-rotate"></i> Reconnect
+            </button>
           </div>
         ) : isSessionExpired ? (
           <button
