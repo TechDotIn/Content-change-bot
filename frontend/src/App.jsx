@@ -68,6 +68,35 @@ export default function App() {
       setIsResetPasswordView(true);
     }
 
+    // Detect Razorpay Payment Link return
+    const urlParams = new URLSearchParams(window.location.search);
+    const paymentStatus = urlParams.get("payment");
+    const plinkId = urlParams.get("razorpay_payment_link_id") || urlParams.get("payment_link_id");
+    const planIdParam = urlParams.get("plan_id");
+
+    if (paymentStatus === "success" && plinkId) {
+      authFetch("/api/subscription/verify-payment-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payment_link_id: plinkId, plan_id: planIdParam })
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.success) {
+            showToast("🎉 Payment verified! Your subscription is now active!", "success");
+            fetchStatus();
+          } else {
+            showToast(data.detail || "Payment verification checked.", "info");
+          }
+        })
+        .catch((err) => {
+          console.error("[PAYMENT] Verification error on redirect:", err);
+        })
+        .finally(() => {
+          window.history.replaceState({}, document.title, window.location.pathname);
+        });
+    }
+
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
       const s = data.session;
