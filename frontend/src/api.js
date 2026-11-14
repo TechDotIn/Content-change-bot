@@ -13,7 +13,7 @@ export const getApiUrl = (path) => {
   } else if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
     baseUrl = "http://localhost:8000";
   } else {
-    baseUrl = "https://tg.adshatke.site";
+    baseUrl = window.location.origin;
   }
 
   return baseUrl + (path.startsWith("/") ? path : "/" + path);

@@ -41,6 +41,17 @@ Deno.serve(async (req: Request) => {
 
     const planInfo = PLAN_PRICES[plan_id];
 
+    let callbackUrl = "https://telegram.adshatke.site/?payment=success&plan_id=" + plan_id;
+    try {
+      const rawOrigin = req.headers.get("origin") || req.headers.get("referer") || Deno.env.get("APP_URL");
+      if (rawOrigin) {
+        const appBaseUrl = new URL(rawOrigin).origin;
+        callbackUrl = `${appBaseUrl}/?payment=success&plan_id=${plan_id}`;
+      }
+    } catch {
+      // ignore URL parsing error
+    }
+
     // Call Razorpay API to create hosted payment link (works with live UPI QR on any domain)
     const authHeader = "Basic " + btoa(`${keyId}:${keySecret}`);
     const plinkRes = await fetch("https://api.razorpay.com/v1/payment_links", {
@@ -60,7 +71,7 @@ Deno.serve(async (req: Request) => {
           plan_id: plan_id,
           plan_name: planInfo.name,
         },
-        callback_url: `https://telegram.adshatke.site/?payment=success&plan_id=${plan_id}`,
+        callback_url: callbackUrl,
         callback_method: "get"
       }),
     });

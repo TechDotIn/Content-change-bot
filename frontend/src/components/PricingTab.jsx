@@ -19,8 +19,8 @@ export default function PricingTab({ status, onRefresh, showToast, setActiveTab 
     try {
       // 1. Primary: Use Cloud Edge Function (supports all plans 599, 799, 1499 & rzp.io links)
       let orderData = null;
-      const sbUrl = import.meta.env.VITE_SUPABASE_URL || "https://qhelyctgtdkwrxkgkufr.supabase.co";
-      const sbAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFoZWx5Y3RndGRrd3J4a2drdWZyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ1NTAxNDksImV4cCI6MjExMDEyNjE0OX0.mM2hly38J3TVHxH5wlekYoAP4EIRbZDB1WYXhJaHkr8";
+      const sbUrl = import.meta.env.VITE_SUPABASE_URL;
+      const sbAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
       try {
         const edgeRes = await fetch(`${sbUrl}/functions/v1/create-razorpay-order`, {
@@ -88,24 +88,58 @@ export default function PricingTab({ status, onRefresh, showToast, setActiveTab 
         handler: async function (response) {
           console.info("[PAYMENT] Razorpay checkout callback response:", response);
           try {
-            const verifyRes = await authFetch("/api/subscription/verify-payment", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                razorpay_order_id: response.razorpay_order_id,
-                razorpay_payment_id: response.razorpay_payment_id,
-                razorpay_signature: response.razorpay_signature,
-                plan_id: planId
-              })
-            });
-            const verifyData = await verifyRes.json();
-            if (verifyData.success) {
+            let verified = false;
+            let verifyData = null;
+
+            // Try Edge function first
+            if (sbUrl && sbAnonKey) {
+              try {
+                const token = localStorage.getItem("sb_access_token");
+                const edgeRes = await fetch(`${sbUrl}/functions/v1/verify-razorpay-payment`, {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    "apikey": sbAnonKey,
+                    ...(token ? { "Authorization": `Bearer ${token}` } : {})
+                  },
+                  body: JSON.stringify({
+                    razorpay_order_id: response.razorpay_order_id,
+                    razorpay_payment_id: response.razorpay_payment_id,
+                    razorpay_signature: response.razorpay_signature,
+                    plan_id: planId
+                  })
+                });
+                if (edgeRes.ok) {
+                  verifyData = await edgeRes.json();
+                  if (verifyData.success) verified = true;
+                }
+              } catch (eEdge) {
+                console.warn("[PAYMENT] Edge verify notice:", eEdge);
+              }
+            }
+
+            if (!verified) {
+              const verifyRes = await authFetch("/api/subscription/verify-payment", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  razorpay_order_id: response.razorpay_order_id,
+                  razorpay_payment_id: response.razorpay_payment_id,
+                  razorpay_signature: response.razorpay_signature,
+                  plan_id: planId
+                })
+              });
+              verifyData = await verifyRes.json();
+              if (verifyData.success) verified = true;
+            }
+
+            if (verified) {
               console.info("[PAYMENT] Signature verification succeeded. Subscription activated:", verifyData);
               notify("🎉 Payment Verified! Plan activated successfully!", "success");
               onRefresh();
             } else {
               console.error("[PAYMENT] Verification failed:", verifyData);
-              notify("Payment Verification Error: " + verifyData.detail, "error");
+              notify("Payment Verification Error: " + (verifyData?.error || verifyData?.detail || "Verification failed"), "error");
             }
           } catch (e) {
             console.error("[PAYMENT] Verification network error:", e);

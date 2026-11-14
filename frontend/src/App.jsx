@@ -69,33 +69,85 @@ export default function App() {
     }
 
     // Detect Razorpay Payment Link return
-    const urlParams = new URLSearchParams(window.location.search);
-    const paymentStatus = urlParams.get("payment");
-    const plinkId = urlParams.get("razorpay_payment_link_id") || urlParams.get("payment_link_id");
-    const planIdParam = urlParams.get("plan_id");
+    const checkAndVerifyPaymentReturn = async (currentSession) => {
+      const urlParams = new URLSearchParams(window.location.search);
+      const paymentStatus = urlParams.get("payment");
+      const plinkId = urlParams.get("razorpay_payment_link_id") || urlParams.get("payment_link_id");
+      const planIdParam = urlParams.get("plan_id") || "plan_599";
+      const paymentId = urlParams.get("razorpay_payment_id");
 
-    if (paymentStatus === "success" && plinkId) {
-      authFetch("/api/subscription/verify-payment-link", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ payment_link_id: plinkId, plan_id: planIdParam })
-      })
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.success) {
-            showToast("🎉 Payment verified! Your subscription is now active!", "success");
-            fetchStatus();
-          } else {
-            showToast(data.detail || "Payment verification checked.", "info");
+      if (paymentStatus === "success" && (plinkId || paymentId)) {
+        console.info("[PAYMENT] Return detected:", { plinkId, paymentId, planId: planIdParam });
+        showToast("Verifying your payment...", "info");
+
+        const token = currentSession?.access_token || localStorage.getItem("sb_access_token");
+        const userId = currentSession?.user?.id;
+        const sbUrl = import.meta.env.VITE_SUPABASE_URL;
+        const sbAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+        let verified = false;
+        let resultMsg = "";
+
+        // 1. Direct Edge Function verification (runs on Supabase Cloud, zero VPS dependency)
+        if (sbUrl && sbAnonKey) {
+          try {
+            const edgeRes = await fetch(`${sbUrl}/functions/v1/verify-razorpay-payment`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "apikey": sbAnonKey,
+                ...(token ? { "Authorization": `Bearer ${token}` } : {})
+              },
+              body: JSON.stringify({
+                payment_link_id: plinkId,
+                razorpay_payment_link_id: plinkId,
+                razorpay_payment_id: paymentId,
+                plan_id: planIdParam,
+                user_id: userId
+              })
+            });
+            const edgeData = await edgeRes.json();
+            if (edgeRes.ok && edgeData.success) {
+              verified = true;
+              resultMsg = edgeData.message;
+            } else if (edgeData.error) {
+              resultMsg = edgeData.error;
+            }
+          } catch (edgeErr) {
+            console.warn("[PAYMENT] Edge verify notice:", edgeErr);
           }
-        })
-        .catch((err) => {
-          console.error("[PAYMENT] Verification error on redirect:", err);
-        })
-        .finally(() => {
-          window.history.replaceState({}, document.title, window.location.pathname);
-        });
-    }
+        }
+
+        // 2. Fallback to backend API
+        if (!verified) {
+          try {
+            const res = await authFetch("/api/subscription/verify-payment-link", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ payment_link_id: plinkId, plan_id: planIdParam })
+            });
+            if (res.ok) {
+              const data = await res.json();
+              if (data.success) {
+                verified = true;
+                resultMsg = data.message;
+              }
+            }
+          } catch (backendErr) {
+            console.warn("[PAYMENT] Backend verify notice:", backendErr);
+          }
+        }
+
+        if (verified) {
+          showToast(resultMsg || "🎉 Payment verified! Your subscription is now active!", "success");
+          fetchStatus();
+        } else {
+          showToast(resultMsg || "Payment verification checked.", "info");
+        }
+
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    };
 
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
@@ -106,12 +158,16 @@ export default function App() {
           localStorage.setItem("sb_access_token", s.access_token);
           console.info("[AUTH] Session restored from Supabase.");
         }
+        checkAndVerifyPaymentReturn(s);
       } else {
         const localToken = localStorage.getItem("sb_access_token");
         if (localToken) {
           setSession({ access_token: localToken });
           setShowLoginPage(false);
           console.info("[AUTH] Session restored from local token.");
+          checkAndVerifyPaymentReturn({ access_token: localToken });
+        } else {
+          checkAndVerifyPaymentReturn(null);
         }
       }
       setAuthLoading(false);
@@ -121,6 +177,7 @@ export default function App() {
       if (localToken) {
         setSession({ access_token: localToken });
         setShowLoginPage(false);
+        checkAndVerifyPaymentReturn({ access_token: localToken });
       }
       if (mounted) setAuthLoading(false);
     });
