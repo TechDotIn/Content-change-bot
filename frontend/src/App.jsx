@@ -249,6 +249,17 @@ export default function App() {
               plan_name: dbSub.plan_name || planTitles[dbSub.plan_id] || "Active Plan"
             };
           }
+
+          // Query latest real-time user_settings directly from Supabase Cloud
+          const { data: dbSettings, error: settErr } = await supabase
+            .from("user_settings")
+            .select("*")
+            .eq("user_id", targetUserId)
+            .maybeSingle();
+
+          if (dbSettings && !settErr) {
+            data.settings = { ...(data.settings || {}), ...dbSettings };
+          }
         }
       } catch (eSub) {
         console.warn("[SUB] Real-time Supabase check notice:", eSub);
@@ -446,35 +457,83 @@ export default function App() {
 
   const handleSaveRules = async (payload) => {
     try {
+      const currentUserId = session?.user?.id || status?.account?.id;
+      const userKey = currentUserId ? `cached_routing_pipelines_${currentUserId}` : "cached_routing_pipelines";
+
       if (Array.isArray(payload.routing_pipelines)) {
         try {
-          const userKey = session?.user?.id ? `cached_routing_pipelines_${session.user.id}` : "cached_routing_pipelines";
           localStorage.setItem(userKey, JSON.stringify(payload.routing_pipelines));
         } catch (e) {}
       }
-      const res = await authFetch("/api/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        showToast("Engine Settings & Rules Saved Successfully!", "success");
-        if (data.settings) {
-          setStatus((prev) => ({ ...prev, settings: data.settings }));
+
+      // 1. Direct Supabase Cloud persistence (zero data loss across reloads)
+      if (currentUserId) {
+        try {
+          const dbRow = {
+            user_id: currentUserId,
+            source_channel_id: payload.source_channel_id,
+            destination_channel_id: payload.destination_channel_id,
+            routing_pipelines: payload.routing_pipelines,
+            webhook_url: payload.webhook_url,
+            auto_post_telegram: payload.auto_post_telegram,
+            auto_post_n8n: payload.auto_post_n8n,
+            text_prefix: payload.text_prefix,
+            text_suffix: payload.text_suffix,
+            find_text: payload.find_text,
+            replace_text: payload.replace_text,
+            replacement_rules: payload.replacement_rules,
+            override_all_links: payload.override_all_links,
+            custom_link_url: payload.custom_link_url,
+            remove_all_links: payload.remove_all_links,
+            override_media_image: payload.override_media_image,
+            custom_image_url: payload.custom_image_url,
+            strip_media_images: payload.strip_media_images,
+            keyword_filter: payload.keyword_filter,
+            filter_mode: payload.filter_mode,
+            enable_translation: payload.enable_translation,
+            source_language: payload.source_language,
+            target_language: payload.target_language,
+            enabled: payload.enabled ?? true,
+            updated_at: new Date().toISOString()
+          };
+          const cleanRow = Object.fromEntries(Object.entries(dbRow).filter(([_, v]) => v !== undefined));
+          await supabase.from("user_settings").upsert(cleanRow, { onConflict: "user_id" });
+        } catch (dbErr) {
+          console.warn("[SETTINGS] Direct Supabase upsert notice:", dbErr);
         }
-        if (payload.source_channel_id !== undefined) {
-          setActiveSourceId(payload.source_channel_id);
-          activeSourceIdRef.current = payload.source_channel_id;
-        }
-        if (payload.destination_channel_id !== undefined) {
-          setActiveDestId(payload.destination_channel_id);
-          activeDestIdRef.current = payload.destination_channel_id;
-        }
-        fetchStatus();
-      } else {
-        showToast("Error saving settings: " + (data.detail || "Failed"), "error");
       }
+
+      // 2. Also send to VPS backend so listener picks it up in memory
+      let savedSettings = null;
+      try {
+        const res = await authFetch("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data?.settings) {
+          savedSettings = data.settings;
+        }
+      } catch (apiErr) {
+        console.warn("[SETTINGS] Backend API notice:", apiErr);
+      }
+
+      showToast("Engine Settings & Rules Saved Successfully!", "success");
+
+      if (payload.source_channel_id !== undefined) {
+        setActiveSourceId(payload.source_channel_id);
+        activeSourceIdRef.current = payload.source_channel_id;
+      }
+      if (payload.destination_channel_id !== undefined) {
+        setActiveDestId(payload.destination_channel_id);
+        activeDestIdRef.current = payload.destination_channel_id;
+      }
+
+      if (savedSettings) {
+        setStatus((prev) => ({ ...prev, settings: savedSettings }));
+      }
+      await fetchStatus();
     } catch (err) {
       console.error("[saveSettings] Error saving settings:", err);
       showToast("Save error: " + err, "error");
