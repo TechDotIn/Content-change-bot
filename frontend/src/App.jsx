@@ -223,6 +223,37 @@ export default function App() {
         return;
       }
       const data = await res.json();
+
+      // Query latest real-time subscription directly from Supabase Cloud
+      try {
+        const targetUserId = data?.account?.id || session?.user?.id;
+        if (targetUserId) {
+          const { data: dbSub, error: subErr } = await supabase
+            .from("subscriptions")
+            .select("*")
+            .eq("user_id", targetUserId)
+            .maybeSingle();
+
+          if (dbSub && !subErr) {
+            const isExpired = dbSub.status === "expired" || (dbSub.current_period_end && new Date(dbSub.current_period_end).getTime() < Date.now());
+            const planTitles = {
+              plan_599: "Basic Plan (₹599)",
+              plan_799: "Pro Plan (₹799)",
+              plan_1499: "AI Translation & Multi-Channel Plan (₹1499)"
+            };
+
+            data.subscription = {
+              ...dbSub,
+              status: isExpired ? "expired" : dbSub.status,
+              is_expired: isExpired,
+              plan_name: dbSub.plan_name || planTitles[dbSub.plan_id] || "Active Plan"
+            };
+          }
+        }
+      } catch (eSub) {
+        console.warn("[SUB] Real-time Supabase check notice:", eSub);
+      }
+
       setStatus(data);
 
       if (data?.settings) {
